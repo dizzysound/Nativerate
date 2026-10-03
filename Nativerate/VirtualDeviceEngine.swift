@@ -1701,6 +1701,9 @@ final class VirtualDeviceEngine {
         recorder?.segmentOut(seg >= 0 ? seg : outFrames.load(ordering: .acquiring), r)
         resetLock()
         if listenerPaused {
+            // as the play path does: the device poll would take a default moved during the switch
+            // for the listener's pick and follow it
+            reclaimDefault()
             log("  Music was paused before the switch (the listener's pause): stays paused; switch \(switches) done \(ms(t)) after the request")
             return
         }
