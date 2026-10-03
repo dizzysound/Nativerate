@@ -40,6 +40,8 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
 
 The **Bit-Perfect Check** menu item reports whether your current path is bit-perfect and, if not, why.
 
+<p align="center"><img src="docs/menu.png" width="307" alt="The Nativerate menu: 44.1 kHz on an AudioQuest DragonFly Black, with Exclusive Mode checked and Selected Device, Other Apps &amp; Alerts, Bit-Perfect Check, Advanced, About and Quit."></p>
+
 Tested on macOS 26 and 27 with a Neumann MT 48, an RME Babyface Pro, an AudioQuest DragonFly and a
 MacBook Pro's speakers.
 Using something else? A [hardware report](https://github.com/dizzysound/Nativerate/issues/new?template=hardware_report.yml)
