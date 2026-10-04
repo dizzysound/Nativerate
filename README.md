@@ -40,6 +40,15 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
 
 The **Bit-Perfect Check** menu item reports whether your current path is bit-perfect and, if not, why.
 
+**On macOS 26, Music's samples are not bit-exact to the file before they reach Nativerate.** On macOS
+26.6.2 (Music 1.6.6), with every setting that changes samples off, Music's output arrives scaled by
+about 0.99999997 (-0.0000003 dB): a 16-bit track lands within 0.006 of a 16-bit step of the file's
+values, a 24-bit track within 1.5 steps of a 24-bit one. That is far below audibility, and Nativerate
+plays what it receives to the DAC unchanged. The Bit-Perfect Check reports such a track as "16 bit (or
+24 bit), but not bit-exact", not as a change in Music's settings. On macOS 27.0.1 (Music 1.7), the
+same measurement found Music's samples equal to the file's, 16 and 24 bit, and Nativerate's output
+equal to them. Both were recorded at the virtual device and compared against the decoded files.
+
 <p align="center"><img src="docs/menu.png" width="307" alt="The Nativerate menu: 44.1 kHz on an AudioQuest DragonFly Black, with Exclusive Mode checked and Selected Device, Other Apps &amp; Alerts, Bit-Perfect Check, Advanced, About and Quit."></p>
 
 Tested on macOS 26 and 27 with a Neumann MT 48, an RME Babyface Pro, an AudioQuest DragonFly and a

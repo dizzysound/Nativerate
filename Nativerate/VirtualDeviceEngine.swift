@@ -169,6 +169,7 @@ final class VirtualDeviceEngine {
     // step, against 23-25% for any real level change down to -0.01 dB (simulated on the same file).
     private let gridLow = Atomic<Int>(0), gridFar24 = Atomic<Int>(0)
     private var gridLast = (0, 0, 0, 0, 0, 0)     // A's counters at the last check
+    private var gridLastAt = Date.distantPast     // and when
     private var gridTotal = (0, 0, 0, 0, 0, 0)    // clean windows of this track
     private var gridPending: (Int, Int, Int, Int, Int, Int)? // the last clean window, counted once the next is clean too
     private var gridNear = false // the verdict's depth is near its grid (rounded in the playback path), not on it
@@ -1172,7 +1173,7 @@ final class VirtualDeviceEngine {
 
     /// A new track (or decoder): measure its depth from here.
     private func resetGrid() {
-        gridLast = gridCounters()
+        gridLast = gridCounters(); gridLastAt = Date()
         gridTotal = (0, 0, 0, 0, 0, 0); gridPending = nil
         gridSince = Date(); gridVerdict = nil; gridNear = false; gridAwaitClean = nil; gridInferredLossy = false
         RendererOutput.shared.set(offGrid: false)
@@ -1197,10 +1198,16 @@ final class VirtualDeviceEngine {
     private func checkGrid() {
         let snap = gridCounters()
         let win = (snap.0 &- gridLast.0, snap.1 &- gridLast.1, snap.2 &- gridLast.2, snap.3 &- gridLast.3, snap.4 &- gridLast.4, snap.5 &- gridLast.5)
-        gridLast = snap
-        guard let since = gridSince else { return }
         let now = Date()
-        let clean = playing && !inRoutine && now.timeIntervalSince(lastInfoAt) > 1 && now.timeIntervalSince(since) >= 1
+        let span = now.timeIntervalSince(gridLastAt)
+        gridLast = snap; gridLastAt = now
+        guard let since = gridSince else { return }
+        // A window over 1 s long spans a switch (the routine blocks this loop, then watches Music for
+        // 1 s while its notices still come in, so the notice test alone passes). It holds the track's
+        // first ~0.07 s played into the old rate and Music's first buffer after the rewind, both off
+        // every grid (Executor, 2026-10-04, Kind & Generous after a 96k track: 9368 and 706 samples past
+        // 1/64 of a 16-bit step, every later buffer within 0.002 of one): "neither", not 16 bit.
+        let clean = playing && !inRoutine && span <= 1 && now.timeIntervalSince(lastInfoAt) > 1 && now.timeIntervalSince(since) >= 1
         if let until = gridAwaitClean {
             if clean && win.0 > 0 && (win.2 == 0 || win.3 == 0) { // on the 24-bit grid, or near the 16-bit one
                 gridAwaitClean = nil
