@@ -864,10 +864,13 @@ final class VirtualDeviceEngine {
     }
 
     /// Music may not start when told to play right after the default output changed: check, retry.
+    /// Asks Music, not the notices: they can arrive seconds late and in a burst (Executor,
+    /// 2026-10-03), so `playing` still read false after Music had started, the retries went on, and
+    /// the next one undid the listener's pause.
     private func playChecked() {
         for attempt in 1...4 {
             _ = scripts.play()
-            if wait(2, until: { self.playing }) { return }
+            if wait(2, until: { self.scripts.playerState() == "playing" }) { return }
             log("play attempt \(attempt): Music isn't playing")
         }
     }
@@ -1662,6 +1665,9 @@ final class VirtualDeviceEngine {
         // Music can start playing before it posts Playing (after a relaunch): the gate saw the first
         // frame earlier, and that is where the play began
         let tPlay = gatePending ? min(tPlay, gateMarkedAt ?? tPlay) : tPlay
+        // Music already paused, and not by a caller: the listener paused after the Playing that
+        // brought us here. The rate still switches; Music stays paused (it used to play again here).
+        let listenerPaused = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
         _ = scripts.pause()
         var m = marker.load(ordering: .acquiring)
         // a new track reported late (a skip): the gap before it, if B hasn't played it yet
@@ -1694,6 +1700,13 @@ final class VirtualDeviceEngine {
         let seg = outSegmentAt.exchange(-1, ordering: .acquiringAndReleasing)
         recorder?.segmentOut(seg >= 0 ? seg : outFrames.load(ordering: .acquiring), r)
         resetLock()
+        if listenerPaused {
+            // as the play path does: the device poll would take a default moved during the switch
+            // for the listener's pick and follow it
+            reclaimDefault()
+            log("  Music was paused before the switch (the listener's pause): stays paused; switch \(switches) done \(ms(t)) after the request")
+            return
+        }
         let pos = scripts.position() ?? 0
         // measured to the pause, not to now: the paused position doesn't advance during the switch (it
         // was measured to now, so a mid-track switch replayed the switch's own duration, ~1.5 s)
@@ -1713,17 +1726,30 @@ final class VirtualDeviceEngine {
 
     /// Music can end up paused after the switch's play: its late notices from our own pause arrive after
     /// the play (pastor Mac, 2026-09-30, a take-back: Paused 44 ms after the play; the owner had to
-    /// press play). Check Music's state 1 s later; play again, up to 3 times.
+    /// press play). Watch Music's state for 1 s; play again, up to 3 times, but only if it never got
+    /// going: paused after playing 0.3 s or more is the listener's pause, and stays.
     private func confirmPlaying() {
-        for attempt in 1...3 {
-            _ = wait(1)
-            let state = scripts.playerState() ?? "?"
+        for attempt in 1...4 {
+            var since: Date?
+            let end = Date().addingTimeInterval(1)
+            var state = "?"
+            while Date() < end {
+                state = scripts.playerState() ?? "?"
+                if state == "playing" {
+                    if since == nil { since = Date() }
+                } else if let s = since, Date().timeIntervalSince(s) >= 0.3 {
+                    log("  Music played \(String(format: "%.1f", Date().timeIntervalSince(s))) s after the switch, then \(state): the listener's pause; not playing again")
+                    return
+                } else {
+                    since = nil
+                }
+                _ = wait(0.1)
+            }
             if state == "playing" { return }
+            if attempt == 4 { log("  Music still isn't playing after 3 plays"); return }
             log("  Music is \(state) after the switch's play (check \(attempt)); play again")
             _ = scripts.play()
         }
-        _ = wait(1)
-        if scripts.playerState() != "playing" { log("  Music still isn't playing after 3 plays") }
     }
 
     // MARK: - Devices
