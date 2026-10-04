@@ -163,10 +163,15 @@ final class VirtualDeviceEngine {
     // off the 16-bit grid by more than 1/64 of a step (macOS 26 rounds local 16-bit ALAC to within
     // 0.003 of a step: Executor, 2026-09-30, Flambe recorded against the file, residual -166 dBFS)
     private let gridFar16 = Atomic<Int>(0)
-    private var gridLast = (0, 0, 0, 0)     // A's counters at the last check
-    private var gridTotal = (0, 0, 0, 0)    // clean windows of this track
-    private var gridPending: (Int, Int, Int, Int)? // the last clean window, counted once the next is clean too
-    private var gridNear = false // the verdict's 16 bit is within 1/64 of a step, not on the grid
+    // Nonzero samples under 1/16 FS, and those more than 3/8 of a 24-bit step off its grid. macOS 26
+    // moves 24-bit ALAC too (Executor, 2026-10-04, Hang 'em High recorded against the file: gain
+    // 0.999999967, 62% off the 24-bit grid), but at low level by little: 0.00% of them past 3/8 of a
+    // step, against 23-25% for any real level change down to -0.01 dB (simulated on the same file).
+    private let gridLow = Atomic<Int>(0), gridFar24 = Atomic<Int>(0)
+    private var gridLast = (0, 0, 0, 0, 0, 0)     // A's counters at the last check
+    private var gridTotal = (0, 0, 0, 0, 0, 0)    // clean windows of this track
+    private var gridPending: (Int, Int, Int, Int, Int, Int)? // the last clean window, counted once the next is clean too
+    private var gridNear = false // the verdict's depth is near its grid (rounded in the playback path), not on it
     private var lastInfoAt = Date.distantPast
     private var gridSince: Date?
     private var gridVerdict: Int? // 16, 24, or 0 = on neither grid
@@ -1157,20 +1162,21 @@ final class VirtualDeviceEngine {
         RendererOutput.shared.set(sourceBits: lossy ? nil : shown, lossy: lossy)
         // only a source known to be lossless on no grid means Music changes the samples
         RendererOutput.shared.set(offGrid: !lossy && sourceKnown && gridVerdict == 0)
-        RendererOutput.shared.set(nearGrid: !sourceLossy && gridVerdict == 16 && gridNear)
+        RendererOutput.shared.set(nearGrid: !sourceLossy && gridNear ? gridVerdict ?? 0 : 0)
     }
 
-    private func gridCounters() -> (Int, Int, Int, Int) {
-        (gridNZ.load(ordering: .acquiring), gridOff16.load(ordering: .acquiring), gridOff24.load(ordering: .acquiring), gridFar16.load(ordering: .acquiring))
+    private func gridCounters() -> (Int, Int, Int, Int, Int, Int) {
+        (gridNZ.load(ordering: .acquiring), gridOff16.load(ordering: .acquiring), gridOff24.load(ordering: .acquiring), gridFar16.load(ordering: .acquiring),
+         gridLow.load(ordering: .acquiring), gridFar24.load(ordering: .acquiring))
     }
 
     /// A new track (or decoder): measure its depth from here.
     private func resetGrid() {
         gridLast = gridCounters()
-        gridTotal = (0, 0, 0, 0); gridPending = nil
+        gridTotal = (0, 0, 0, 0, 0, 0); gridPending = nil
         gridSince = Date(); gridVerdict = nil; gridNear = false; gridAwaitClean = nil; gridInferredLossy = false
         RendererOutput.shared.set(offGrid: false)
-        RendererOutput.shared.set(nearGrid: false)
+        RendererOutput.shared.set(nearGrid: 0)
     }
 
     /// No decoder line of its own: Music's library can still say the track is lossy, when it's an AAC or
@@ -1190,7 +1196,7 @@ final class VirtualDeviceEngine {
     /// nonzero samples counted, the depth the samples need; only ever up (16 -> 24 -> neither).
     private func checkGrid() {
         let snap = gridCounters()
-        let win = (snap.0 &- gridLast.0, snap.1 &- gridLast.1, snap.2 &- gridLast.2, snap.3 &- gridLast.3)
+        let win = (snap.0 &- gridLast.0, snap.1 &- gridLast.1, snap.2 &- gridLast.2, snap.3 &- gridLast.3, snap.4 &- gridLast.4, snap.5 &- gridLast.5)
         gridLast = snap
         guard let since = gridSince else { return }
         let now = Date()
@@ -1208,20 +1214,24 @@ final class VirtualDeviceEngine {
             }
         }
         if clean {
-            if let p = gridPending { gridTotal = (gridTotal.0 + p.0, gridTotal.1 + p.1, gridTotal.2 + p.2, gridTotal.3 + p.3) }
+            if let p = gridPending { gridTotal = (gridTotal.0 + p.0, gridTotal.1 + p.1, gridTotal.2 + p.2, gridTotal.3 + p.3, gridTotal.4 + p.4, gridTotal.5 + p.5) }
             gridPending = win
         } else {
             gridPending = nil
         }
         guard now.timeIntervalSince(since) >= 2 else { return }
-        let (nz, o16, o24, f16) = gridTotal
+        let (nz, o16, o24, f16, low, f24) = gridTotal
         guard nz >= Int(curRate) else { return }
         // Off every grid but all within 1/64 of a 16-bit step: a 16-bit source rounded on the way
         // (macOS 26), not a level change. Still 16 bit, just not bit-exact.
-        let near = o24 > 0 && f16 == 0
-        let v = near ? 16 : o24 > 0 ? 0 : o16 > 0 ? 24 : 16
-        // only ever up: 16 -> 16 near -> 24 -> neither
-        let rank = { (v: Int, n: Bool) in v == 16 ? (n ? 1 : 0) : v == 24 ? 2 : 3 }
+        let near16 = o24 > 0 && f16 == 0
+        // The same for a 24-bit source: under 1% of the low-level samples past 3/8 of a step (a real
+        // level change puts ~24% there), with enough of them to tell.
+        let near24 = o24 > 0 && !near16 && low >= 2000 && f24 * 100 < low
+        let near = near16 || near24
+        let v = near16 ? 16 : near24 ? 24 : o24 > 0 ? 0 : o16 > 0 ? 24 : 16
+        // only ever up: 16 -> 16 near -> 24 -> 24 near -> neither
+        let rank = { (v: Int, n: Bool) in v == 16 ? (n ? 1 : 0) : v == 24 ? (n ? 3 : 2) : 4 }
         if let g = gridVerdict, rank(v, near) <= rank(g, gridNear) { return }
         gridVerdict = v; gridNear = near
         // Off every grid, and it's not known to be lossless: lossy if the track started on a lossy
@@ -1232,7 +1242,8 @@ final class VirtualDeviceEngine {
             gridInferredLossy = trackStartedLossy || (!sourceKnown && musicLeavesSamplesAlone())
         }
         let why = v == 0 ? "on neither the 16- nor the 24-bit grid (\(o24) of \(nz) samples): \(sourceLossy ? "lossy" : gridInferredLossy ? (trackStartedLossy ? "lossy (it started on a lossy decoder)" : "lossy (no decoder line of its own; Music's volume 100, Sound Check and Sound Enhancer off)") : !sourceKnown ? "no decoder line of its own, so lossy or changed by Music" : "Music changes them (volume, Sound Check, EQ) or the source is float")"
-            : near ? "\(o24) of \(nz) samples within 1/64 of a 16-bit step but not on it: rounded in the playback path, not bit-exact"
+            : near16 ? "\(o24) of \(nz) samples within 1/64 of a 16-bit step but not on it: rounded in the playback path, not bit-exact"
+            : near24 ? "\(o24) of \(nz) samples off the 24-bit grid, \(f24) of \(low) low-level ones past 3/8 of a step: rounded in the playback path, not bit-exact"
             : v == 24 ? "\(o16) of \(nz) samples off the 16-bit grid, all on the 24-bit grid" : "all \(nz) on the 16-bit grid"
         log("source depth from the samples: \(v == 0 ? "neither 16 nor 24 bit" : "\(v) bit") (\(why))\(logBits.map { $0 != v ? "; Music's log said \($0) bit" : "" } ?? "")")
         publishSource()
@@ -1952,22 +1963,29 @@ final class VirtualDeviceEngine {
             f = UnsafePointer(d.assumingMemoryBound(to: Float.self))
         }
         let w0 = ring.written
-        var cnz = 0, c16 = 0, c24 = 0, f16 = 0
+        var cnz = 0, c16 = 0, c24 = 0, f16 = 0, low = 0, f24 = 0
         for i in 0..<(n * 2) {
             let x = f[i]
             if x != 0 {
                 cnz += 1
+                let isLow = abs(x) < 1.0 / 16
+                if isLow { low += 1 }
                 let a = x * 32768
                 if a != a.rounded() {
                     c16 += 1
                     if abs(a - a.rounded()) > 1.0 / 64 { f16 += 1 }
-                    let b = x * 8388608; if b != b.rounded() { c24 += 1 }
+                    let b = x * 8388608
+                    if b != b.rounded() {
+                        c24 += 1
+                        if isLow && abs(b - b.rounded()) > 0.375 { f24 += 1 }
+                    }
                 }
             }
         }
         if cnz > 0 {
             gridNZ.wrappingAdd(cnz, ordering: .releasing); gridOff16.wrappingAdd(c16, ordering: .releasing)
             gridOff24.wrappingAdd(c24, ordering: .releasing); gridFar16.wrappingAdd(f16, ordering: .releasing)
+            gridLow.wrappingAdd(low, ordering: .releasing); gridFar24.wrappingAdd(f24, ordering: .releasing)
         }
         let gl = gapLen.load(ordering: .relaxed)
         for i in 0..<n {
@@ -3039,12 +3057,12 @@ final class RendererOutput: ObservableObject {
     @Published private(set) var offGrid = false
 
     /// Any thread.
-    /// The track measured 16 bit but within 1/64 of a step rather than on the grid: rounded in the
-    /// playback path (macOS 26), not bit-exact, not a level change.
-    @Published private(set) var nearGrid = false
+    /// The depth (16 or 24) the track measured near rather than on its grid: rounded in the playback
+    /// path (macOS 26), not bit-exact, not a level change. 0 otherwise.
+    @Published private(set) var nearGrid = 0
 
     /// Any thread.
-    func set(nearGrid v: Bool) {
+    func set(nearGrid v: Int) {
         DispatchQueue.main.async { if self.nearGrid != v { self.nearGrid = v } }
     }
 
