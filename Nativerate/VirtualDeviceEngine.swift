@@ -1700,8 +1700,12 @@ final class VirtualDeviceEngine {
         let played = pauseTime.timeIntervalSince(tPlay) + 0.05
         var startPos = pos - played - 0.1
         // near the start is the start: the estimate can come up short (0.530 on the Babyface bench),
-        // and a restart that skips a track's first half-second is heard
-        if startPos < 2 { startPos = 0 }
+        // and a restart that skips a track's first half-second is heard. Not 0: Music's position is its
+        // render point less the reported latency (~0.5 s), so a new track paused at its Playing reads
+        // 0.000 with its first 0.16-0.5 s rendered (and dropped above); "set to 0" is then a no-op and
+        // the play resumed there, every switch at a boundary (loopback bench, Executor, 2026-10-03).
+        // 0.001 is a real seek.
+        if startPos < 2 { startPos = 0.001 }
         _ = scripts.setPosition(startPos)
         reclaimDefault() // never let Music start on whatever coreaudiod fell back to
         _ = scripts.play()
