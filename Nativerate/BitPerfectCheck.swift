@@ -89,7 +89,7 @@ final class BitPerfectCheck: ObservableObject {
             var items = Self.check(outputDevice: device)
             if let others { items.append(Item(id: "otherApps", ok: others.ok, text: others.text)) }
             if offGrid { items.append(Item(id: "offGrid", ok: false, text: "Music is changing the samples (they fit no 16- or 24-bit grid): volume, Sound Check or EQ")) }
-            if nearGrid { items.append(Item(id: "nearGrid", ok: false, text: "16 bit, but not bit-exact: macOS rounds Music's samples to within 1/64 of a 16-bit step (seen on macOS 26; inaudible, not a level change)")) }
+            if nearGrid != 0 { items.append(Item(id: "nearGrid", ok: false, text: "\(nearGrid) bit, but not bit-exact: macOS rounds Music's samples by a fraction of a \(nearGrid)-bit step (seen on macOS 26; inaudible, not a level change)")) }
             print("[BitPerfectCheck] " + items.map { "\($0.ok.map { $0 ? "ok" : "REVIEW" } ?? "?"): \($0.text)" }.joined(separator: " | "))
             DispatchQueue.main.async {
                 self?.items = items
