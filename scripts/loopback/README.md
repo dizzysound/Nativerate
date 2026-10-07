@@ -9,7 +9,7 @@ loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swif
 - macOS 15 or earlier, or 27 or later, for a strict bit-perfect result. On macOS 26 only, Music
   scales its output by about 0.99999997 (up to 1 LSB at 24-bit), so no run is exactly bit-perfect
   there. `run_all.sh` then sets `TOL=1` and labels passes "within tolerance, not bit-perfect".
-- Nativerate running, **Exclusive Mode on**, the Babyface chosen as Music's output.
+- Nativerate running, **Exclusive Mode on and Integer Mode on** (Integer Mode is off by default; without it the DAC stays float and the format check reports FAIL), the Babyface chosen as Music's output.
 
 ## Set up
 1. TotalMix: on the output pair Music plays to (for example AN 1/2), click **Loopback** in the
@@ -25,8 +25,9 @@ loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swif
 ./run_all.sh 96000        # one rate
 ```
 `run_all.sh` builds `recorder` from `rec.swift`, makes `signals/`, deletes the old
-`rec/rec_<rate>_<bits>.wav` before each case, records, plays via AppleScript to Music, asserts the
-device's output stream is the case's rate and depth (integer), compares, and prints a summary table.
+`rec/rec_<rate>_<bits>.wav` before each case, records, plays via AppleScript to Music, samples every output
+stream of the device during the recording and checks that one was the case's rate and depth (integer),
+compares (a format FAIL does not skip the compare; the summary shows both results), and prints a summary table.
 It exits non-zero if any case failed. `PLAYER=manual` has you press play in Music yourself.
 `PLAYER=afplay` bypasses Music and Nativerate and is only a harness smoke test.
 

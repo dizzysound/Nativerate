@@ -49,10 +49,14 @@ play() { # file duration_seconds
     music)
       osascript -e "tell application \"Music\" to play (POSIX file \"$1\")" || return 1
       sleep 3
-      local t=0
+      local t=3
       while [ "$(osascript -e 'tell application "Music" to player state as string')" = playing ]; do
-        sleep 1; t=$((t + 1)); [ "$t" -gt "$(($2 + 30))" ] && { echo "Music still playing after timeout"; osascript -e 'tell application "Music" to stop'; return 1; }
-      done ;;
+        sleep 1; t=$((t + 1))
+        if [ "$t" -gt "$(($2 + 30))" ]; then echo "Music still playing after timeout"; osascript -e 'tell application "Music" to stop'; return 1; fi
+      done
+      # The file is about $2 s minus the 5 s margin long; Music stopping much earlier means it did not play it.
+      if [ "$t" -lt "$(($2 - 8))" ]; then echo "Music stopped after $t s, expected about $(($2 - 5)) s"; return 1; fi
+      return 0 ;;
     *) echo "unknown PLAYER=$PLAYER"; return 1 ;;
   esac
 }
@@ -66,7 +70,7 @@ add() { results+=("$1|$2|$3"); }
 # code (0 pass, 1 samples differ, 2 marker/format error) or CASE_ERR to a failure label.
 run_case() {
   local rate=$1 bits=$2 ref rec secs
-  CASE_RC=""; CASE_ERR=""
+  CASE_RC=""; CASE_ERR=""; CASE_FMT=""
   ref="$PWD/signals/ref_${rate}_${bits}.wav"
   rec="rec/rec_${rate}_${bits}.wav"
   rm -f "$rec"   # a stale recording must never be compared
@@ -86,7 +90,13 @@ run_case() {
   play "$ref" "$secs"; local play_rc=$?
   wait "$rec_pid"; local rec_rc=$?
   if [ "$play_rc" -ne 0 ]; then echo "FAIL: playback failed"; CASE_ERR="FAIL playback"; return; fi
-  if [ "$rec_rc" -eq 3 ]; then echo "FAIL: output stream format is not $rate Hz $bits-bit integer"; CASE_ERR="FAIL output format"; return; fi
+  # Format check result (3 = never integer, 4 = the device has no integer format) is kept, and the
+  # sample compare below still runs, so one run reports both.
+  CASE_FMT=""
+  case "$rec_rc" in
+    3) echo "FAIL: output stream format was never $rate Hz $bits-bit integer"; CASE_FMT="format FAIL"; rec_rc=0 ;;
+    4) echo "note: device has no integer output format, format not checked"; CASE_FMT="format n/a"; rec_rc=0 ;;
+  esac
   if [ "$rec_rc" -ne 0 ] || [ ! -s "$rec" ]; then echo "FAIL: recorder exit $rec_rc"; CASE_ERR="FAIL recorder exit $rec_rc"; return; fi
   # Find the loopback pair once: accept a pair only when compare.py explicitly says LOCATED.
   if [ -z "$pair" ]; then
@@ -128,9 +138,11 @@ for rate in $RATES; do
       continue
     fi
     run_case "$rate" "$bits"
-    if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR"; failed=1
-    elif [ "$CASE_RC" -eq 0 ]; then add "$rate" "$bits" "PASS$([ "$TOL" -gt 0 ] && echo " (<= $TOL LSB)")"
-    else add "$rate" "$bits" "FAIL compare exit $CASE_RC"; failed=1; fi
+    fmt=""; [ -n "$CASE_FMT" ] && fmt="; $CASE_FMT"
+    [ "$CASE_FMT" = "format FAIL" ] && failed=1
+    if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR$fmt"; failed=1
+    elif [ "$CASE_RC" -eq 0 ]; then add "$rate" "$bits" "samples PASS$([ "$TOL" -gt 0 ] && echo " (<= $TOL LSB)")$fmt"
+    else add "$rate" "$bits" "samples FAIL (compare exit $CASE_RC)$fmt"; failed=1; fi
   done
 done
 
