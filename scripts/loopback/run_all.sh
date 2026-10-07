@@ -1,17 +1,17 @@
 #!/bin/bash
-# Runs the whole loopback test: for each test file, record the loopback input with sox,
-# play the file in Music (through Nativerate), then compare.
+# Runs the whole loopback test: for each test file, record the loopback input with ./rec,
+# play the file with afplay to the default output, then compare.
 # Run it in Terminal (not over SSH: macOS gives SSH sessions silence from audio inputs).
 # Usage: ./run_all.sh [rate ...]   e.g. ./run_all.sh 96000   (default: all rates)
 set -u
 cd "$(dirname "$0")"
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
-DEV="${DEV:-Babyface Pro (73020432)}"
-# sox (coreaudio) records only the first 2 inputs, so loopback must land on input AN 1/2:
-# TotalMix Loopback on the Main / AN 1/2 output.
-CH="${CH:-2}"
+DEV="${DEV:-Babyface Pro}"
+# rec records every input of the device; the channel pair with the marker is found below.
+CH="${CH:-14}"
 RATES="${*:-44100 48000 88200 96000 176400 192000}"
 [ -d signals ] || python3 make_signal.py signals
+[ rec -nt rec.swift ] || swiftc -O rec.swift -o rec || exit 1
 mkdir -p rec
 pair=""
 
@@ -21,7 +21,7 @@ for rate in $RATES; do
     rec="rec/rec_${rate}_${bits}.wav"
     secs=$(python3 -c "import wave;w=wave.open('$ref');print(int(w.getnframes()/w.getframerate())+4)")
     echo "== $rate Hz $bits-bit"
-    sox -q --buffer 262144 -t coreaudio "$DEV" -c "$CH" -b 24 -r "$rate" "$rec" trim 0 "$((secs + 2))" &
+    ./rec "$DEV" "$rate" "$((secs + 2))" "$rec" &
     sox_pid=$!
     sleep 2
     # afplay: plays the file unchanged to the default output (no Music Sound Check/EQ/volume).
