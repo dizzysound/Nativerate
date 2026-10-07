@@ -676,12 +676,12 @@ final class VirtualDeviceEngine {
         let margin = (SwitchGap(rawValue: UserDefaults.standard.string(forKey: Defaults.kSwitchMargin) ?? "") ?? .normal).margin
         targetFillA.store(fixedTarget ?? Int(rate * margin), ordering: .releasing)
         gapLen.store(max(Int(0.01 * rate), 1), ordering: .releasing)
-        setReportedLatency(targetFill)
         // the menu bar's rate: with Exclusive Mode on, OutputDevices' own detection is off and it only
         // re-reads a device when the default output changes, so a switch mid-session never reached it
         // (pastor Mac: "it's clearly switching but the taskbar is not")
         outputDevices.updateSampleRate(rate, bitDepth: nil)
         if others.isRunning, others.rate != rate { restartOthers("the virtual device's rate is now \(Int(rate)) Hz") }
+        refreshReportedLatency()
     }
 
     /// Scripting menu: the regular path runs the user's script (rate, bit depth) when it sets a new
@@ -948,11 +948,13 @@ final class VirtualDeviceEngine {
         if let t = target, t == othersDevice, others.isRunning {
             othersFeed.store(1, ordering: .releasing)
             moveAlerts(to: t)
+            refreshReportedLatency()
             return
         }
         guard let sp = target else {
             log("other apps: MUTED (\(note)); Music alone reaches the DAC")
             RendererOutput.shared.set(othersRoute: "Other apps muted", ok: true)
+            refreshReportedLatency()
             // alert sounds still leave the DAC: to the built-in speakers if there are any
             if let b = Self.builtInSpeakers(excluding: dac) { moveAlerts(to: b) }
             return
@@ -964,9 +966,11 @@ final class VirtualDeviceEngine {
         if others.start(device: sp, rate: curRate, log: { [unowned self] in self.log($0) }) {
             othersFeed.store(1, ordering: .releasing)
             RendererOutput.shared.set(othersRoute: "Other apps play on \(name)", ok: true)
+            refreshReportedLatency()
         } else {
             log("other apps: MUTED (the player on \(name) didn't start)")
             RendererOutput.shared.set(othersRoute: "Other apps muted (\(name) didn't start)", ok: true)
+            refreshReportedLatency()
         }
         OtherAppsOutput.shared.setActive(sp)
         moveAlerts(to: sp)
@@ -1001,7 +1005,7 @@ final class VirtualDeviceEngine {
         othersRestartAt = Date()
         log("other apps: restarting the player (\(why))")
         othersFeed.store(0, ordering: .releasing)
-        if others.start(device: d, rate: curRate, log: { [unowned self] in self.log($0) }) { othersFeed.store(1, ordering: .releasing) }
+        if others.start(device: d, rate: curRate, log: { [unowned self] in self.log($0) }) { othersFeed.store(1, ordering: .releasing); refreshReportedLatency() }
     }
 
     /// Every 0.5 s: the speakers' varispeed follows the others ring's fill (the two clocks drift).
@@ -1434,9 +1438,7 @@ final class VirtualDeviceEngine {
         steppedAside = true
         probeAfterStepAside()
         othersToDACWhileIdle()
-        // video apps keep the Exclusive Mode trail as their audio delay unless told the DAC path's;
-        // the take-back's applyRate reports the trail again
-        setReportedLatency(others.latencyFrames)
+        refreshReportedLatency()
     }
 
     /// While stepped aside the DAC is free and Music is idle: other apps play on it (shared, mixable),
@@ -1456,6 +1458,7 @@ final class VirtualDeviceEngine {
             OtherAppsOutput.shared.setActive(dac)
             RendererOutput.shared.set(othersRoute: "Other apps play on \(name) (Music idle)", ok: true)
             log("other apps -> \(name) while Music is idle")
+            refreshReportedLatency()
         } else {
             log("other apps: couldn't play on \(name) while idle; staying where they were")
             othersDevice = 0
@@ -1674,6 +1677,32 @@ final class VirtualDeviceEngine {
     /// Plug-in 1.1.6: the device reports B's trail as its output latency, so video stays in sync.
     private static let kLatency: AudioObjectPropertySelector = 0x4C53_6C74 // 'LSlt'
     private var reportedLatency = -1
+    /// What video apps playing to the virtual device should assume: Music's switch margin when other apps
+    /// share Music's path (old driver), else the way other apps really go: the loopback read, the
+    /// player's ring, and the output device's own presentation delay (the app can't know that one).
+    /// `LipSyncTrimMs` (hidden) shifts it for a bench.
+    private func refreshReportedLatency() {
+        guard others.isRunning, othersDevice != 0, othersFeed.load(ordering: .relaxed) != 0, curRate > 0 else {
+            setReportedLatency(isMusicOnlyDriver ? 0 : targetFill)
+            return
+        }
+        let rate = curRate
+        let destRate = max(CA.nominal(othersDevice), 1)
+        let dest = Int(Double(CA.presentationFrames(othersDevice, kAudioObjectPropertyScopeOutput)) * rate / destRate)
+        let loop = Int(Double(CA.presentationFrames(ls, kAudioObjectPropertyScopeInput)) * rate / max(CA.nominal(ls), 1))
+        let trim = Int(UserDefaults.standard.double(forKey: "LipSyncTrimMs") * rate / 1000)
+        let total = max(0, others.latencyFrames + dest + loop + trim)
+        if total != reportedLatency {
+            log("lip sync: other apps' delay \(total) frames = player ring \(others.latencyFrames) + \(CA.string(othersDevice, kAudioObjectPropertyName)) \(dest) + loopback read \(loop)\(trim != 0 ? " + trim \(trim)" : "")")
+        }
+        setReportedLatency(total)
+    }
+
+    private var isMusicOnlyDriver: Bool {
+        var a = CA.addr(Self.kMusicOnly)
+        return ls != 0 && AudioObjectHasProperty(ls, &a)
+    }
+
     private func setReportedLatency(_ frames: Int) {
         guard ls != 0, frames != reportedLatency else { return }
         var a = CA.addr(Self.kLatency)
@@ -2629,6 +2658,18 @@ enum CA {
     }
 
     static func nominal(_ d: AudioObjectID) -> Float64 { DeviceFormat.nominalSampleRate(d) ?? 0 }
+
+    static func uint32(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope) -> UInt32 {
+        var v = UInt32(0); var a = addr(sel, scope); var z = UInt32(4)
+        return AudioObjectGetPropertyData(obj, &a, 0, nil, &z, &v) == noErr ? v : 0
+    }
+
+    /// What an app playing to `d` assumes of it: latency + safety offset + stream latency + buffer (frames).
+    static func presentationFrames(_ d: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int {
+        let st = streams(d, scope).first.map { uint32($0, kAudioStreamPropertyLatency, kAudioObjectPropertyScopeGlobal) } ?? 0
+        return Int(uint32(d, kAudioDevicePropertyLatency, scope) + uint32(d, kAudioDevicePropertySafetyOffset, scope)
+            + st + uint32(d, kAudioDevicePropertyBufferFrameSize, scope))
+    }
 
     static func setNominal(_ d: AudioObjectID, _ hz: Float64) -> OSStatus {
         var r = hz; var a = addr(kAudioDevicePropertyNominalSampleRate)
