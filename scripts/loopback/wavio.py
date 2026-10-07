@@ -40,7 +40,8 @@ def read(path, channels=None):
         if cid == b"fmt ":
             fmt = data[start:start + size]
         elif cid == b"data":
-            body = data[start:start + size]
+            # Size 0 = header never finalized (recorder killed or file not closed): use the rest.
+            body = data[start:start + size] if size else data[start:]
     if fmt is None or body is None:
         raise ValueError(f"{path}: missing fmt or data chunk")
     tag, ch, rate, bits = _fmt(fmt)
