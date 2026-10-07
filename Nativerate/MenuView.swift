@@ -214,11 +214,10 @@ struct MenuView: View {
 
             Section("Advanced") {
                 dacInfoMenu
-                if defaults.userPreferRendererEngine {
-                    // a DAC with only 24/32-bit or float formats has no 16-bit format to match
-                    Toggle("Bit depth match", isOn: $defaults.integer16)
-                        .disabled(dither.dacHas16 != true)
-                        .help("A lossless 16-bit track plays in the DAC's 16-bit integer format, if the DAC offers one, so a DAC-side bit-perfect test (Naim, RME) sees 16 bits. Other tracks use the DAC's widest format. Takes effect at the next track.")
+                if defaults.userPreferRendererEngine, dither.dacHasInt == true {
+                    // only for a DAC with an integer format (a float-only DAC has nothing to match)
+                    Toggle("Integer Mode", isOn: $defaults.integerMode)
+                        .help("A lossless track plays in the DAC's integer format of the same bit depth (16, 24 or 32 bit), so a DAC-side bit-perfect test (Naim, RME) sees the track's depth. If the DAC has no integer format of that depth, the current format stays. Takes effect at the next track.")
                 }
                 driverMenu
                 scriptMenu

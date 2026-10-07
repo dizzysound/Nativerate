@@ -187,7 +187,7 @@ final class VirtualDeviceEngine {
     // buffered lossy start for a second or two after the ALAC line), at most until this time
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
-    private var wantBits: Int?    // 16: the track plays in the DAC's 16-bit non-mixable format (Advanced option)
+    private var wantBits: Int?    // 16/24/32: the track plays in the DAC's non-mixable integer format of that depth (Integer Mode)
     private var appliedWant: Int? // wantBits when the DAC's format was last set (nil: the option's format isn't on the DAC)
     private var sourceLossy = false // armAt is for a skip (the gap already went through A)
     // false: no decoder line of the track's own or file header said what the source is (coffee,
@@ -756,11 +756,11 @@ final class VirtualDeviceEngine {
         writtenFormat = vf
         outFormat.store(f.packed, ordering: .releasing)
         let bits = f.isFloat ? 32 : f.bits
-        let has16 = CA.availablePhysicalFormats(dacOut).contains {
-            $0.mFormat.mFormatID == kAudioFormatLinearPCM && $0.mFormat.mBitsPerChannel == 16
+        let hasInt = CA.availablePhysicalFormats(dacOut).contains {
+            $0.mFormat.mFormatID == kAudioFormatLinearPCM
                 && $0.mFormat.mFormatFlags & kAudioFormatFlagIsNonMixable != 0 && $0.mFormat.mFormatFlags & kAudioFormatFlagIsFloat == 0
         }
-        DispatchQueue.main.async { TPDFDither.shared.dacBits = bits; TPDFDither.shared.dacHas16 = has16 }
+        DispatchQueue.main.async { TPDFDither.shared.dacBits = bits; TPDFDither.shared.dacHasInt = hasInt }
         log("B writes \(f) (virtual format \(CA.fmt(vf)))")
     }
 
@@ -1169,7 +1169,7 @@ final class VirtualDeviceEngine {
     }
 
     /// A line's depth is the new track's if it came within 3 s of its Playing, or as a pre-roll while the
-    /// track before played. Else Bit Depth Match asks for nothing (widest format). The latch arm in
+    /// track before played. Else Integer Mode asks for nothing (widest format). The latch arm in
     /// handleLine uses the same pre-roll test, so it and decide() agree on the wanted format.
     private func depthTrusted(_ date: Date, tPlay: Date) -> Bool {
         tPlay.timeIntervalSince(date) <= 3 || preRollLines.contains(date)
@@ -1372,7 +1372,7 @@ final class VirtualDeviceEngine {
         guard !inRoutine, playing, awaiting == nil, pendingUpgrade == nil, armAt == nil, latchedAt == nil,
               latchZeros.load(ordering: .acquiring) == 0, marker.load(ordering: .acquiring) < 0,
               at.timeIntervalSince(lastNewTrackAt ?? .distantPast) > 2,
-              neededRate(rate) != nil || (rate == curRate && !(lossless && bits == nil) && formatDiffers(curRate, want: want16(preRoll ? bits : nil, lossless: lossless))) else { return }
+              neededRate(rate) != nil || (rate == curRate && !(lossless && bits == nil) && formatDiffers(curRate, want: wantInt(preRoll ? bits : nil, lossless: lossless))) else { return }
         let left = scripts.remaining() ?? 0
         let delay = left > 13 ? 0 : max(0, left - 1.5)
         armAt = Date().addingTimeInterval(delay)
@@ -1699,8 +1699,8 @@ final class VirtualDeviceEngine {
         return fmt.mSampleRate
     }
 
-    /// The 16-bit option changes the DAC's depth at `rate`: a track that wants 16 bit and the DAC isn't
-    /// at the format picked for it, or the DAC is at a 16-bit format the option set and this track
+    /// Integer Mode changes the DAC's depth at `rate`: a track that wants an integer depth and the DAC isn't
+    /// at the format picked for it, or the DAC is at a format the option set and this track
     /// doesn't want it. False whenever the option plays no part (only depth and int/float compared:
     /// a DAC that reads its format back with other flags must not restart every same-rate track).
     private func formatDiffers(_ rate: Float64, want: Int?) -> Bool {
@@ -1709,16 +1709,17 @@ final class VirtualDeviceEngine {
         return f.mBitsPerChannel != p.mBitsPerChannel || (f.mFormatFlags ^ p.mFormatFlags) & kAudioFormatFlagIsFloat != 0
     }
 
-    /// 16 if the 16-bit option is on and the track is lossless 16 bit (Music's log), else nil.
-    private func want16(_ bits: Int?, lossless: Bool) -> Int? {
-        UserDefaults.standard.bool(forKey: Defaults.kInteger16) && lossless && bits == 16 ? 16 : nil
+    /// The track's depth (16, 24 or 32, Music's log) if Integer Mode is on and the track is lossless, else nil.
+    private func wantInt(_ bits: Int?, lossless: Bool) -> Int? {
+        guard UserDefaults.standard.bool(forKey: Defaults.kIntegerMode), lossless, let b = bits, [16, 24, 32].contains(b) else { return nil }
+        return b
     }
 
     private func setWantBits(_ bits: Int?, lossless: Bool) {
-        let w = want16(bits, lossless: lossless)
+        let w = wantInt(bits, lossless: lossless)
         if w != wantBits {
             let has = w.map { w in dacFormat(trackRate ?? curRate, want: w).map { Int($0.mBitsPerChannel) == w } ?? false } ?? false
-            log("16-bit output: \(w == nil ? "off" : has ? "on for this track" : "asked for, but the DAC has no 16-bit integer format; widest format")")
+            log("Integer Mode: \(w.map { w in has ? "\(w)-bit integer for this track" : "\(w)-bit asked for, but the DAC has no \(w)-bit integer format; current format" } ?? "off")")
         }
         wantBits = w
     }
@@ -2265,9 +2266,9 @@ final class TPDFDither: ObservableObject, @unchecked Sendable {
     var isOn: Bool { on.load(ordering: .relaxed) != 0 }
     func set(_ value: Bool) { on.store(value ? 1 : 0, ordering: .relaxed) }
     @Published var dacBits: Int?
-    /// The last confirmed DAC offers a 16-bit integer non-mixable format (Bit Depth Match can act);
+    /// The last confirmed DAC offers at least one integer non-mixable format (Integer Mode is shown);
     /// nil until a DAC is confirmed. Kept while the DAC is released.
-    @Published var dacHas16: Bool?
+    @Published var dacHasInt: Bool?
 
     /// One TPDF sample in LSBs: the difference of two uniforms in [0, 1), range (-1, 1).
     @inline(__always)
