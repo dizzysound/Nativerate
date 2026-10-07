@@ -1298,7 +1298,9 @@ final class VirtualDeviceEngine {
         trackStartedLossy = false
         trackRate = rate
         setSource(bits, lossy: !lossless, known: sourceKnown)
-        setWantBits(bits, lossless: lossless)
+        // A line seen long before Playing can be the previous track's (Coffee bench: "16-bit" 15 s
+        // before a 24-bit track). Ask for 16 bit only on a line close to the start; else widest.
+        setWantBits(seenAgo <= 3 ? bits : nil, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
         let need = neededRate(rate)
         log("new track \(name): decoder \(rate) Hz \(lossless ? "lossless" : "lossy") (seen \(String(format: "%.3f", seenAgo)) s before Playing), DAC \(Int(curRate)) Hz\(need.map { " -> switch to \(Int($0))" } ?? "")")
