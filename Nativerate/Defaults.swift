@@ -56,7 +56,7 @@ class Defaults: ObservableObject {
         SoftwareVolume.shared.set(self.softwareVolume)
     }
 
-    /// Exclusive Mode, Advanced: Inter-sample Overshoot Protection (a fixed -3.0 dB on the output).
+    /// Settings > Exclusive Mode: Inter-sample overshoot protection (a fixed -3.0 dB on the output).
     @Published var overshootProtection: Bool {
         willSet {
             UserDefaults.standard.set(newValue, forKey: Self.kOvershootProtection)
@@ -64,7 +64,7 @@ class Defaults: ObservableObject {
         }
     }
 
-    /// Exclusive Mode, Advanced: TPDF dither when B requantizes to an integer DAC under 32 bits.
+    /// Settings > Exclusive Mode: TPDF dither when B requantizes to an integer DAC under 32 bits.
     @Published var tpdfDither: Bool {
         willSet {
             UserDefaults.standard.set(newValue, forKey: Self.kTPDFDither)
@@ -72,7 +72,7 @@ class Defaults: ObservableObject {
         }
     }
 
-    /// Exclusive Mode, Advanced: the volume keys scale the output when the DAC has no volume control of its own.
+    /// Settings > Exclusive Mode: the volume keys scale the output when the DAC has no volume control of its own.
     @Published var softwareVolume: Bool {
         willSet {
             UserDefaults.standard.set(newValue, forKey: Self.kSoftwareVolume)

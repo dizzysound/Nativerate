@@ -52,6 +52,14 @@ struct MenuView: View {
         }
     }
 
+    private func checkWord(_ ok: Bool?) -> String {
+        switch ok {
+        case true?: return "OK"
+        case false?: return "Warning"
+        case nil: return "Check manually"
+        }
+    }
+
     var body: some View {
         Group {
             // Status first: the music-settings warning, the rate and DAC, then whether the path is bit-perfect
@@ -105,6 +113,7 @@ struct MenuView: View {
         Menu {
             ForEach(bitPerfectCheck.items) { item in
                 Label(item.text, systemImage: checkSymbol(item.ok))
+                    .accessibilityLabel("\(checkWord(item.ok)): \(item.text)")
             }
             Divider()
             Button {
@@ -218,7 +227,7 @@ struct MenuView: View {
             let info = DACInfo.lines(for: renderer.dacID ?? (outputDevices.selectedOutputDevice ?? outputDevices.defaultOutputDevice)?.id)
             ForEach(info.indices, id: \.self) { Text(info[$0]) }
         } label: {
-            Label("DAC info", systemImage: "info.circle")
+            Label("DAC info", systemImage: "waveform")
         }
     }
 
@@ -256,6 +265,7 @@ struct MenuView: View {
                 panel.message = "Choose a script to run when the sample rate changes."
 
                 panel.begin { response in
+                    guard response == .OK else { return }
                     let path = panel.url?.path
                     DispatchQueue.main.async { [weak defaults] in
                         defaults?.shellScriptPath = path
@@ -291,7 +301,7 @@ struct MenuView: View {
     }
 }
 
-/// Advanced > DAC Info: what the selected device offers, read from its output streams' physical
+/// Settings > Advanced > DAC info: what the selected device offers, read from its output streams' physical
 /// formats when the menu is built.
 enum DACInfo {
     static func lines(for device: AudioObjectID?) -> [String] {

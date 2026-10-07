@@ -2,7 +2,7 @@
 //  LogExport.swift
 //  Nativerate
 //
-//  About > Export Logs…: one zip with what the Exclusive Mode benches (MT 48, DragonFly Black) needed
+//  About Nativerate > Export logs…: one zip with what the Exclusive Mode benches (MT 48, DragonFly Black) needed
 //  to find a fault: the engine logs, every output device's formats, hog owner, running state and
 //  volume, the app's and Music's settings, the plug-in version, filtered unified-log extracts (this
 //  process's HAL client IO context: pause/resume, start, "IO is still disabled"; coreaudiod's config
@@ -34,7 +34,7 @@ final class LogExport: ObservableObject {
         export(to: dest, stamp: stamp) { error in
             if let error {
                 let alert = NSAlert()
-                alert.messageText = "Export Logs failed"
+                alert.messageText = "Export logs failed"
                 alert.informativeText = "\(error)"
                 alert.runModal()
             } else {

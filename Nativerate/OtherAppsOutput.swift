@@ -3,7 +3,7 @@
 //  Nativerate
 //
 //  Exclusive Mode, Music only (plug-in 1.1.4): where every other app's audio and the alert sounds play
-//  while the engine holds the DAC for Music, and that device's volume. Menu: "Other Apps & Alerts";
+//  while the engine holds the DAC for Music, and that device's volume. Menu: "Other apps and alerts";
 //  the volume slider lives in a small window (a menu-style MenuBarExtra is a native NSMenu and draws no
 //  sliders). The slider drives the device's own volume and mute; a device without a settable volume
 //  gets a gain in the engine's other-apps player instead.
@@ -46,7 +46,7 @@ final class OtherAppsOutput: ObservableObject {
     /// Where other apps should play, given the DAC: a device, or nil (muted) with the reason.
     static func resolve(dac: AudioObjectID) -> (device: AudioObjectID?, note: String) {
         let c = UserDefaults.standard.string(forKey: choiceKey)
-        if c == mute { return (nil, "muted (chosen in Other Apps & Alerts)") }
+        if c == mute { return (nil, "muted (chosen in Other apps and alerts)") }
         if let c, let d = CA.devices().first(where: { CA.string($0, kAudioDevicePropertyDeviceUID) == c && CA.hasOutput($0) }) {
             if d != dac { return (d, "chosen") }
             if let sp = VirtualDeviceEngine.builtInSpeakers(excluding: dac) { return (sp, "the chosen \(CA.string(d, kAudioObjectPropertyName)) is the DAC; built-in speakers instead") }
@@ -146,7 +146,7 @@ final class OtherAppsOutput: ObservableObject {
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 190),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            w.title = "Other Apps & Alerts"
+            w.title = "Other apps and alerts"
             w.isReleasedWhenClosed = false
             w.contentViewController = NSHostingController(rootView: OtherAppsView(output: self))
             w.center()
@@ -168,7 +168,7 @@ struct OtherAppsView: View {
                 Text("Built-in Speakers (automatic)").tag("")
                 ForEach(output.devices, id: \.uid) { d in Text(d.name).tag(d.uid) }
                 Divider()
-                Text("Mute Other Apps").tag(OtherAppsOutput.mute)
+                Text("Mute other apps").tag(OtherAppsOutput.mute)
             }
             if output.choice != OtherAppsOutput.mute, !output.controlledName.isEmpty {
                 HStack {
