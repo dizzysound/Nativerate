@@ -18,12 +18,20 @@
 #                       then you set the TotalMix fader to -0.1 dB when asked and the same case
 #                       must exit 1 (samples differ). OK only if both hold.
 #        CH=N           input channel count override (default: read from the recording)
+#        OUT_DEV="<name>"  output device (second DAC) whose rate and format are checked, when it is
+#                       not DEV. DEV stays the recording input. Default: DEV.
+#        FORMAT_ONLY=1  no recording, no sample compare: play each file and only check the output
+#                       format (integer 16/24-bit). For an analog-only DAC with no cable to the
+#                       Babyface; set OUT_DEV (or DEV) to that DAC.
 set -u
 cd "$(dirname "$0")"
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
 DEV="${DEV:-Babyface Pro}"
 PLAYER="${PLAYER:-music}"
 CONTROL="${CONTROL:-}"
+FORMAT_ONLY="${FORMAT_ONLY:-}"
+OUT_DEV="${OUT_DEV:-}"; export OUT_DEV
+FMT_DEV="${OUT_DEV:-$DEV}"
 RATES="${*:-44100 48000 88200 96000 176400 192000}"
 MACOS_MAJOR=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
 if [ -z "${TOL:-}" ]; then
@@ -37,6 +45,7 @@ if [ -z "${TOL:-}" ]; then
 fi
 [ "$PLAYER" = afplay ] && echo "warning: PLAYER=afplay does not go through Music or Nativerate. Results do not test Nativerate."
 [ -n "$CONTROL" ] && [ "$CONTROL" != neg ] && { echo "CONTROL must be 'neg' or empty"; exit 2; }
+[ -n "$FORMAT_ONLY" ] && [ -n "$CONTROL" ] && { echo "FORMAT_ONLY and CONTROL cannot be combined (the negative control needs the sample compare)"; exit 2; }
 
 [ -d signals ] || python3 make_signal.py signals || exit 1
 if [ ! -x recorder ] || [ rec.swift -nt recorder ]; then swiftc -O rec.swift -o recorder || exit 1; fi
@@ -49,12 +58,13 @@ play() { # file duration_seconds
     music)
       osascript -e "tell application \"Music\" to play (POSIX file \"$1\")" || return 1
       sleep 3
-      local t=3
+      local t0=$((SECONDS - 3)) t   # real elapsed seconds since play, not loop iterations
       while [ "$(osascript -e 'tell application "Music" to player state as string')" = playing ]; do
-        sleep 1; t=$((t + 1))
+        sleep 1; t=$((SECONDS - t0))
         if [ "$t" -gt "$(($2 + 30))" ]; then echo "Music still playing after timeout"; osascript -e 'tell application "Music" to stop'; return 1; fi
       done
       # The file is about $2 s minus the 5 s margin long; Music stopping much earlier means it did not play it.
+      t=$((SECONDS - t0))
       if [ "$t" -lt "$(($2 - 8))" ]; then echo "Music stopped after $t s, expected about $(($2 - 5)) s"; return 1; fi
       return 0 ;;
     *) echo "unknown PLAYER=$PLAYER"; return 1 ;;
@@ -84,7 +94,11 @@ run_case() {
     osascript -e 'tell application "Music" to stop' >/dev/null
     if [ "$prime_rc" -ne 0 ]; then echo "FAIL: DAC did not switch to $rate Hz"; CASE_ERR="FAIL rate switch"; return; fi
   fi
-  ./recorder "$DEV" "$rate" "$((secs + 5))" "$rec" "$bits" &
+  if [ -n "$FORMAT_ONLY" ]; then
+    ./recorder --format-only "$FMT_DEV" "$rate" "$((secs + 5))" "$bits" &
+  else
+    ./recorder "$DEV" "$rate" "$((secs + 5))" "$rec" "$bits" &
+  fi
   local rec_pid=$!
   sleep 2
   play "$ref" "$secs"; local play_rc=$?
@@ -97,6 +111,10 @@ run_case() {
     3) echo "FAIL: output stream format was never $rate Hz $bits-bit integer"; CASE_FMT="format FAIL"; rec_rc=0 ;;
     4) echo "SKIP: device has no integer output format (float-only), integer assert skipped; sample compare still runs"; CASE_FMT="format SKIP"; rec_rc=0 ;;
   esac
+  if [ -n "$FORMAT_ONLY" ]; then
+    case "$rec_rc" in 0) [ -n "$CASE_FMT" ] || CASE_FMT="format OK" ;; *) echo "FAIL: recorder exit 2"; CASE_ERR="FAIL recorder exit 2"; return ;; esac
+    CASE_RC=0; return
+  fi
   if [ "$rec_rc" -ne 0 ] || [ ! -s "$rec" ]; then echo "FAIL: recorder exit $rec_rc"; CASE_ERR="FAIL recorder exit $rec_rc"; return; fi
   # Find the loopback pair once: accept a pair only when compare.py explicitly says LOCATED.
   if [ -z "$pair" ]; then
@@ -125,6 +143,7 @@ for rate in $RATES; do
       echo "Step 1: TotalMix fader at 0 dB. The case must PASS."
       run_case "$rate" "$bits"
       if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR (step 1, 0 dB)"; failed=1; continue; fi
+      if [ "$CASE_FMT" = "format FAIL" ]; then add "$rate" "$bits" "CONTROL INVALID: format FAIL at 0 dB (step 1)"; failed=1; continue; fi
       if [ "$CASE_RC" -ne 0 ]; then add "$rate" "$bits" "CONTROL INVALID: no PASS at 0 dB (compare exit $CASE_RC)"; failed=1; continue; fi
       read -r -p "Step 2: set the TotalMix output fader to -0.1 dB, then press Return: " _
       run_case "$rate" "$bits"
@@ -141,6 +160,7 @@ for rate in $RATES; do
     fmt=""; [ -n "$CASE_FMT" ] && fmt="; $CASE_FMT"
     [ "$CASE_FMT" = "format FAIL" ] && failed=1
     if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR$fmt"; failed=1
+    elif [ -n "$FORMAT_ONLY" ]; then add "$rate" "$bits" "samples not run (FORMAT_ONLY); ${CASE_FMT:-format ?}"
     elif [ "$CASE_RC" -eq 0 ]; then add "$rate" "$bits" "samples PASS$([ "$TOL" -gt 0 ] && echo " (<= $TOL LSB)")$fmt"
     else add "$rate" "$bits" "samples FAIL (compare exit $CASE_RC)$fmt"; failed=1; fi
   done

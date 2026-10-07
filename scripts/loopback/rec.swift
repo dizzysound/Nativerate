@@ -2,6 +2,8 @@
 // (sox's coreaudio input repeats 4096-frame blocks and drops others at high rates.)
 // Build: swiftc -O rec.swift -o recorder
 // Usage: ./recorder "<device name substring>" <rate> <seconds> <out.wav> [<expected output bits>]
+//        ./recorder --format-only "<output device>" <rate> <seconds> <bits>   (no recording)
+// Environment OUT_DEV: output device to check when it differs from the input device (second DAC).
 // With the last argument it also reads the device's OUTPUT physical stream format at the end of the
 // recording (every 0.2 s, all output streams) and prints what it saw. Exit 0 if some stream was
 // <rate> Hz and <bits>-bit integer at some point, 3 if never, 4 if the device offers no integer
@@ -51,20 +53,25 @@ func physicalFormat(_ stream: AudioStreamID) -> AudioStreamBasicDescription? {
     return AudioObjectGetPropertyData(stream, &addr, 0, nil, &s, &asbd) == noErr ? asbd : nil
 }
 
-/// True if any output stream of the device offers a non-mixable integer physical format.
-func hasIntegerFormat(_ dev: AudioDeviceID) -> Bool {
-    for st in outputStreams(dev) {
+/// Whether any output stream of the device offers an integer (non-float) physical format of 16 bits
+/// or more. nil if the formats could not be read (no output streams or a property error), so a wrong
+/// device or a read failure is never reported as "float-only".
+func hasIntegerFormat(_ dev: AudioDeviceID) -> Bool? {
+    let streams = outputStreams(dev)
+    if streams.isEmpty { return nil }
+    var found = false
+    for st in streams {
         var addr = AudioObjectPropertyAddress(mSelector: kAudioStreamPropertyAvailablePhysicalFormats,
                                               mScope: kAudioObjectPropertyScopeGlobal,
                                               mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(st, &addr, 0, nil, &size) == noErr, size > 0 else { continue }
+        guard AudioObjectGetPropertyDataSize(st, &addr, 0, nil, &size) == noErr, size > 0 else { return nil }
         var fmts = [AudioStreamRangedDescription](repeating: AudioStreamRangedDescription(),
                                                   count: Int(size) / MemoryLayout<AudioStreamRangedDescription>.size)
-        guard AudioObjectGetPropertyData(st, &addr, 0, nil, &size, &fmts) == noErr else { continue }
-        if fmts.contains(where: { $0.mFormat.mFormatFlags & kAudioFormatFlagIsFloat == 0 && $0.mFormat.mBitsPerChannel >= 16 }) { return true }
+        guard AudioObjectGetPropertyData(st, &addr, 0, nil, &size, &fmts) == noErr else { return nil }
+        if fmts.contains(where: { $0.mFormat.mFormatFlags & kAudioFormatFlagIsFloat == 0 && $0.mFormat.mBitsPerChannel >= 16 }) { found = true }
     }
-    return false
+    return found
 }
 
 func describe(_ f: AudioStreamBasicDescription, stream: AudioStreamID) -> String {
@@ -91,7 +98,64 @@ func waitForRate(_ dev: AudioDeviceID, _ rate: Double, timeout: Double) -> Bool 
 }
 
 let a = CommandLine.arguments
-if a.count >= 4, a[3] == "--wait-rate", let r = Double(a[2]), let d = deviceID(matching: a[1]) {
+// OUT_DEV (environment) names the output device whose rate and physical format are checked when it
+// is not the input device, for example a second DAC fed by a digital cable into the Babyface.
+func outputDevice(_ inputName: String) -> AudioDeviceID? {
+    if let n = ProcessInfo.processInfo.environment["OUT_DEV"], !n.isEmpty { return deviceID(matching: n) }
+    return deviceID(matching: inputName)
+}
+
+let lock = NSLock()
+var seen: [String] = []        // distinct "stream N: ..." descriptions, in order of first sight
+var matched = false
+var sampling = true
+
+// Nativerate sets the integer format while it plays and puts the old one back afterwards, so the
+// output streams are sampled every 0.2 s while the test runs, not once at the end.
+func startSampling(_ outDev: AudioDeviceID, rate: Double, want: UInt32) {
+    DispatchQueue.global().async {
+        while true {
+            lock.lock(); let go = sampling; lock.unlock()
+            if !go { break }
+            for st in outputStreams(outDev) {
+                guard let f = physicalFormat(st) else { continue }
+                let d = describe(f, stream: st)
+                lock.lock()
+                if !seen.contains(d) { seen.append(d) }
+                if Int(f.mSampleRate) == Int(rate) && f.mBitsPerChannel == want && f.mFormatFlags & kAudioFormatFlagIsFloat == 0 { matched = true }
+                lock.unlock()
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
+}
+
+/// Prints what was seen and exits 0 (matched), 3 (never), 4 (no integer format offered), 2 (could not read).
+func finishFormatCheck(_ outDev: AudioDeviceID, rate: Double, want: UInt32) -> Never {
+    lock.lock(); sampling = false; let list = seen; let ok = matched; lock.unlock()
+    for d in list { print("rec: output physical format seen: \(d)") }
+    if ok { print("rec: output format OK: \(Int(rate)) Hz \(want)-bit integer seen"); exit(0) }
+    switch hasIntegerFormat(outDev) {
+    case nil:
+        FileHandle.standardError.write("rec: cannot read the output formats (no output streams on the device?). Check DEV / OUT_DEV.\n".data(using: .utf8)!); exit(2)
+    case false?:
+        print("rec: SKIP integer format assert: this device offers no integer output format (float-only)"); exit(4)
+    case true?:
+        print("rec: FAIL output format was never \(Int(rate)) Hz \(want)-bit integer (Integer Mode on and Exclusive Mode on?)"); exit(3)
+    }
+}
+
+// --format-only <output device> <rate> <seconds> <bits>: no recording; samples the output format
+// while something plays (analog-only second DAC, no cable).
+if a.count == 6, a[1] == "--format-only", let r = Double(a[3]), let fsecs = Double(a[4]), let fwant = UInt32(a[5]) {
+    guard let od = deviceID(matching: a[2]) else {
+        FileHandle.standardError.write("rec: output device not found: \(a[2])\n".data(using: .utf8)!); exit(2)
+    }
+    startSampling(od, rate: r, want: fwant)
+    Thread.sleep(forTimeInterval: fsecs)
+    finishFormatCheck(od, rate: r, want: fwant)
+}
+if a.count >= 4, a[3] == "--wait-rate", let r = Double(a[2]), let d = outputDevice(a[1]) {
     let t = a.count > 4 ? Double(a[4]) ?? 30 : 30
     if waitForRate(d, r, timeout: t) { exit(0) }
     FileHandle.standardError.write("rec: device did not reach \(Int(r)) Hz within \(Int(t)) s\n".data(using: .utf8)!); exit(2)
@@ -128,33 +192,13 @@ input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { buf, _ in
     do { try file.write(from: buf) } catch { writeError = error; done.signal(); return }
     if file.length >= total { done.signal() }
 }
-// Nativerate sets the integer format while it plays and puts the old one back afterwards, so the
-// output streams are sampled every 0.2 s during the recording, not once at the end.
-let lock = NSLock()
-var seen: [String] = []        // distinct "stream N: ..." descriptions, in order of first sight
-var matched = false
-var sampling = true
-if a.count == 6, let want = UInt32(a[5]) {
-    DispatchQueue.global().async {
-        while true {
-            lock.lock(); let go = sampling; lock.unlock()
-            if !go { break }
-            for st in outputStreams(dev) {
-                guard let f = physicalFormat(st) else { continue }
-                let d = describe(f, stream: st)
-                lock.lock()
-                if !seen.contains(d) { seen.append(d) }
-                if Int(f.mSampleRate) == Int(rate) && f.mBitsPerChannel == want && f.mFormatFlags & kAudioFormatFlagIsFloat == 0 { matched = true }
-                lock.unlock()
-            }
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-    }
+guard let outDev = outputDevice(a[1]) else {
+    FileHandle.standardError.write("rec: output device not found (OUT_DEV)\n".data(using: .utf8)!); exit(2)
 }
+if a.count == 6, let want = UInt32(a[5]) { startSampling(outDev, rate: rate, want: want) }
 try engine.start()
 let timedOut = done.wait(timeout: .now() + secs + 10) == .timedOut
 engine.stop()
-lock.lock(); sampling = false; lock.unlock()
 if let e = writeError {
     FileHandle.standardError.write("rec: file write failed: \(e)\n".data(using: .utf8)!); exit(2)
 }
@@ -164,15 +208,4 @@ if timedOut {
 print("rec: \(fmt.channelCount) ch, \(Int(rate)) Hz, \(file.length) frames")
 // Exit 3 = the recording is fine but the output format check failed (the compare still runs).
 // Exit 4 = the device offers no integer output format at all, so the check cannot apply.
-if a.count == 6, let want = UInt32(a[5]) {
-    lock.lock(); let list = seen; let ok = matched; lock.unlock()
-    for d in list { print("rec: output physical format seen: \(d)") }
-    if ok { print("rec: output format OK: \(Int(rate)) Hz \(want)-bit integer seen while recording") }
-    else if !hasIntegerFormat(dev) {
-        print("rec: SKIP integer format assert: this device offers no integer output format (float-only)")
-        exit(4)
-    } else {
-        print("rec: FAIL output format was never \(Int(rate)) Hz \(want)-bit integer (Integer Mode on and Exclusive Mode on?)")
-        exit(3)
-    }
-}
+if a.count == 6, let want = UInt32(a[5]) { finishFormatCheck(outDev, rate: rate, want: want) }
