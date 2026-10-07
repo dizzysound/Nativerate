@@ -151,7 +151,13 @@ final class VirtualDeviceEngine {
     private var lastTrackID: Int64?
     private typealias DecoderLine = (date: Date, rate: Float64, bits: Int?, lossless: Bool)
     private var decoderRates: [DecoderLine] = []
+    /// Lossless lines with a depth that came while a track played and are not its own setup: the next
+    /// track's pre-roll (local files 8-12 s before the end, streams up to ~265 s), so their depth is that
+    /// track's. A lossless line at the rate of a still-lossy track is its own late upgrade, not a
+    /// pre-roll (Coffee bench: Hey Jack Kerouac's 16-bit upgrade, 15 s before the 24-bit Mountains).
+    private var preRollLines: [Date] = []
     private var lossyTrackAt: Date?
+    private var lossyStartAt: Date? // like lossyTrackAt, but the first lossless line does not clear it
     private var pendingUpgrade: (rate: Float64, bits: Int?)?
     private var armAt: Date?
     private var armedAt: Date?
@@ -181,6 +187,8 @@ final class VirtualDeviceEngine {
     // buffered lossy start for a second or two after the ALAC line), at most until this time
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
+    private var wantBits: Int?    // 16/24/32: the track plays in the DAC's non-mixable integer format of that depth (Integer Mode)
+    private var appliedWant: Int? // wantBits when the DAC's format was last set (nil: the option's format isn't on the DAC)
     private var sourceLossy = false // armAt is for a skip (the gap already went through A)
     // false: no decoder line of the track's own or file header said what the source is (coffee,
     // 2026-09-29: 12 iTunes Match AAC uploads logged none, were taken as lossless, and the Bit-Perfect
@@ -421,6 +429,7 @@ final class VirtualDeviceEngine {
                 resetGrid()
                 gridAwaitClean = Date().addingTimeInterval(5)
                 setSource(up.bits, lossy: false)
+                setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
                     log("lossless decoder at \(up.rate) Hz after a lossy start; switching again")
                     switchRate(r, name: "(lossless upgrade)", tPlay: Date())
@@ -668,6 +677,7 @@ final class VirtualDeviceEngine {
             nonMixable = f.mFormatFlags & kAudioFormatFlagIsNonMixable != 0
             log("DAC format -> \(CA.fmt(f)): \(st)")
             runUserScript(rate, bits: Int(f.mBitsPerChannel))
+            if st == noErr { appliedWant = wantBits }   // a refused format is not applied
         } else if CA.nominal(dac) != rate {
             log("DAC has no listed format at \(rate) Hz; nominal rate -> \(CA.setNominal(dac, rate))")
             runUserScript(rate, bits: nil)
@@ -695,12 +705,18 @@ final class VirtualDeviceEngine {
         DispatchQueue.main.async { devices.runUserScript(rate, bitDepth: bits) }
     }
 
-    /// Non-mixable first when hogged (exclusive integer output), then the most bits.
-    private func dacFormat(_ rate: Float64) -> AudioStreamBasicDescription? {
+    /// Non-mixable first when hogged (exclusive integer output), then the most bits. With `wantBits`
+    /// set, a non-mixable format of exactly that depth comes first.
+    private func dacFormat(_ rate: Float64) -> AudioStreamBasicDescription? { dacFormat(rate, want: wantBits) }
+
+    private func dacFormat(_ rate: Float64, want: Int?) -> AudioStreamBasicDescription? {
         let all = CA.availablePhysicalFormats(dacOut).filter {
             $0.mFormat.mFormatID == kAudioFormatLinearPCM && ($0.mFormat.mSampleRate == rate || ($0.mSampleRateRange.mMinimum <= rate && rate <= $0.mSampleRateRange.mMaximum))
         }.map { r -> AudioStreamBasicDescription in var f = r.mFormat; f.mSampleRate = rate; return f }
         let usable = hogged ? all : all.filter { $0.mFormatFlags & kAudioFormatFlagIsNonMixable == 0 }
+        if hogged, let w = want, let f = usable.first(where: {
+            $0.mFormatFlags & kAudioFormatFlagIsNonMixable != 0 && $0.mFormatFlags & kAudioFormatFlagIsFloat == 0 && Int($0.mBitsPerChannel) == w
+        }) { return f }
         return usable.max { a, b in
             let na = a.mFormatFlags & kAudioFormatFlagIsNonMixable != 0, nb = b.mFormatFlags & kAudioFormatFlagIsNonMixable != 0
             if na != nb { return !na }
@@ -740,7 +756,11 @@ final class VirtualDeviceEngine {
         writtenFormat = vf
         outFormat.store(f.packed, ordering: .releasing)
         let bits = f.isFloat ? 32 : f.bits
-        DispatchQueue.main.async { TPDFDither.shared.dacBits = bits }
+        let hasInt = CA.availablePhysicalFormats(dacOut).contains {
+            $0.mFormat.mFormatID == kAudioFormatLinearPCM
+                && $0.mFormat.mFormatFlags & kAudioFormatFlagIsNonMixable != 0 && $0.mFormat.mFormatFlags & kAudioFormatFlagIsFloat == 0
+        }
+        DispatchQueue.main.async { TPDFDither.shared.dacBits = bits; TPDFDither.shared.dacHasInt = hasInt }
         log("B writes \(f) (virtual format \(CA.fmt(vf)))")
     }
 
@@ -1093,7 +1113,7 @@ final class VirtualDeviceEngine {
         lastTrackID = pid
         settingsCheckDue = true // after the rate decision below: the loop runs it
         lateArmAt = nil
-        lossyTrackAt = nil
+        lossyTrackAt = nil; lossyStartAt = nil
         awaiting = nil
         // Only a decoder line that came after the previous track began can be this track's (its
         // pre-roll, or its own setup). In trial m1 an Apple Music stream reported Playing before its
@@ -1116,7 +1136,7 @@ final class VirtualDeviceEngine {
             let own = decoderRates.last(where: { (prev == nil || $0.date > prev!) && (prevOwnUntil == nil || $0.date > prevOwnUntil!) && $0.rate == r })
             if let n = newest, n.rate != r { log("new track \(name): the newest decoder line says \(Int(n.rate)) Hz, Music says \(Int(r)) Hz for the track; Music's decides") }
             let libLossy = own == nil && libraryLossy(name: name)
-            decide(r, bits: own?.bits, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
+            decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
                    sourceKnown: own != nil || libLossy)
             return
@@ -1145,7 +1165,14 @@ final class VirtualDeviceEngine {
             log("new track \(name): the newest decoder line (\(Int(line.rate)) Hz, \(String(format: "%.3f", at.timeIntervalSince(line.date))) s before Playing) may be the previous track's; waiting 1 s for its own")
             return
         }
-        decide(line.rate, bits: line.bits, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at)
+        decide(line.rate, bits: depthTrusted(line.date, tPlay: at) ? line.bits : nil, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at)
+    }
+
+    /// A line's depth is the new track's if it came within 3 s of its Playing, or as a pre-roll while the
+    /// track before played. Else Integer Mode asks for nothing (widest format). The latch arm in
+    /// handleLine uses the same pre-roll test, so it and decide() agree on the wanted format.
+    private func depthTrusted(_ date: Date, tPlay: Date) -> Bool {
+        tPlay.timeIntervalSince(date) <= 3 || preRollLines.contains(date)
     }
 
     /// Music's sample rate for the current track, if the current track is `name` (up to ~1 s of retries:
@@ -1288,7 +1315,9 @@ final class VirtualDeviceEngine {
         trackStartedLossy = false
         trackRate = rate
         setSource(bits, lossy: !lossless, known: sourceKnown)
+        setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
+        lossyStartAt = lossless ? nil : Date()
         let need = neededRate(rate)
         log("new track \(name): decoder \(rate) Hz \(lossless ? "lossless" : "lossy") (seen \(String(format: "%.3f", seenAgo)) s before Playing), DAC \(Int(curRate)) Hz\(need.map { " -> switch to \(Int($0))" } ?? "")")
         if let r = need {
@@ -1309,8 +1338,14 @@ final class VirtualDeviceEngine {
             log("decoder: \(rate) Hz \(bits.map { "\($0)-bit " } ?? "")(\(lossless ? "lossless" : "lossy"))")
         }
         // Apple Music streams can start on a lossy 48k decoder and set up the lossless one seconds later.
+        let ownUpgrade = lossless && (lossyStartAt.map { at.timeIntervalSince($0) < 10 } ?? false) // timed only: a lossless next track at the same rate is a pre-roll
         if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits); lossyTrackAt = nil }
         decoderRates.append((at, rate, bits, lossless))
+        let preRoll = bits != nil && lossless && !ownUpgrade && playing && !inRoutine && awaiting == nil && at > (ownLinesUntil ?? .distantPast)
+        if preRoll {
+            preRollLines.removeAll { at.timeIntervalSince($0) > 600 }
+            preRollLines.append(at)
+        }
         if decoderRates.count > 200 { decoderRates.removeFirst(100) }
         // ALAC logs a 'qlac' line without the depth, then 'alac ... from N-bit source': a line in the
         // track's own window at its rate fills in the depth the menu shows
@@ -1323,7 +1358,7 @@ final class VirtualDeviceEngine {
         // a later lossless line upgrades it as usual (lossyTrackAt).
         if !lossless, !sourceLossy, rate == trackRate, let own = ownLinesUntil, at <= own {
             log("the track's own decoder is lossy (\(Int(rate)) Hz)")
-            lossyTrackAt = at
+            lossyTrackAt = at; lossyStartAt = at
             setSource(nil, lossy: true)
         }
         if let aw = awaiting, !inRoutine {
@@ -1336,7 +1371,8 @@ final class VirtualDeviceEngine {
         // Lines right after a track began are its own decoder (streams set it up after Playing).
         guard !inRoutine, playing, awaiting == nil, pendingUpgrade == nil, armAt == nil, latchedAt == nil,
               latchZeros.load(ordering: .acquiring) == 0, marker.load(ordering: .acquiring) < 0,
-              at.timeIntervalSince(lastNewTrackAt ?? .distantPast) > 2, neededRate(rate) != nil else { return }
+              at.timeIntervalSince(lastNewTrackAt ?? .distantPast) > 2,
+              neededRate(rate) != nil || (rate == curRate && !(lossless && bits == nil) && formatDiffers(curRate, want: wantInt(preRoll ? bits : nil, lossless: lossless))) else { return }
         let left = scripts.remaining() ?? 0
         let delay = left > 13 ? 0 : max(0, left - 1.5)
         armAt = Date().addingTimeInterval(delay)
@@ -1353,7 +1389,8 @@ final class VirtualDeviceEngine {
             awaiting = nil
             if let f = aw.fallback {
                 log("no newer decoder line for \(aw.name) within 1 s; the earlier one decides")
-                decide(f.rate, bits: f.bits, lossless: f.lossless, seenAgo: aw.tPlay.timeIntervalSince(f.date), name: aw.name, tPlay: aw.tPlay)
+                // the fallback line is from the previous track's window: its depth may be that track's
+                decide(f.rate, bits: nil, lossless: f.lossless, seenAgo: aw.tPlay.timeIntervalSince(f.date), name: aw.name, tPlay: aw.tPlay)
             } else {
                 log("no decoder line for \(aw.name) within 3 s; playing at \(Int(curRate)) Hz")
                 let ll = libraryLossy(name: aw.name)
@@ -1613,6 +1650,7 @@ final class VirtualDeviceEngine {
             else { setSource(fileStats?.sourceBits, lossy: fileStats?.lossy ?? false, known: fileStats != nil) }
             log("resume: \(name) at \(rate.map { "\(Int($0)) Hz" } ?? "the DAC's rate") (\(musicRate != nil ? "Music's rate for the track" : own != nil ? "its decoder line" : file != nil ? "file header" : recent != nil ? "newest decoder line, may be another track's" : "nothing says"))")
         }
+        setWantBits(logBits, lossless: !sourceLossy)
         let target = rate.flatMap { neededRate($0) } ?? curRate
         if pid != lastTrackID { trackRate = rate }
         lastTrackID = pid
@@ -1653,12 +1691,37 @@ final class VirtualDeviceEngine {
     private func neededRate(_ rate: Float64) -> Float64? {
         guard let device = AudioDevice.lookup(by: dac),
               let fmt = outputDevices.suitableFormat(for: CMPlayerStats(sampleRate: rate, bitDepth: 24, date: Date(), priority: 5), device: device) else { return nil }
-        guard fmt.mSampleRate != curRate else { return nil }
+        guard fmt.mSampleRate != curRate || formatDiffers(curRate, want: wantBits) else { return nil }
         guard CA.nominalRates(ls).contains(fmt.mSampleRate) else {
             log("track needs \(Int(fmt.mSampleRate)) Hz, which the virtual device can't run at; staying at \(Int(curRate)) Hz")
             return nil
         }
         return fmt.mSampleRate
+    }
+
+    /// Integer Mode changes the DAC's depth at `rate`: a track that wants an integer depth and the DAC isn't
+    /// at the format picked for it, or the DAC is at a format the option set and this track
+    /// doesn't want it. False whenever the option plays no part (only depth and int/float compared:
+    /// a DAC that reads its format back with other flags must not restart every same-rate track).
+    private func formatDiffers(_ rate: Float64, want: Int?) -> Bool {
+        guard hogged, want != nil || appliedWant != nil, let f = dacFormat(rate, want: want) else { return false }
+        let p = CA.physicalAndVirtual(dacOut).0
+        return f.mBitsPerChannel != p.mBitsPerChannel || (f.mFormatFlags ^ p.mFormatFlags) & kAudioFormatFlagIsFloat != 0
+    }
+
+    /// The track's depth (16, 24 or 32, Music's log) if Integer Mode is on and the track is lossless, else nil.
+    private func wantInt(_ bits: Int?, lossless: Bool) -> Int? {
+        guard UserDefaults.standard.bool(forKey: Defaults.kIntegerMode), lossless, let b = bits, [16, 24, 32].contains(b) else { return nil }
+        return b
+    }
+
+    private func setWantBits(_ bits: Int?, lossless: Bool) {
+        let w = wantInt(bits, lossless: lossless)
+        if w != wantBits {
+            let has = w.map { w in dacFormat(trackRate ?? curRate, want: w).map { Int($0.mBitsPerChannel) == w } ?? false } ?? false
+            log("Integer Mode: \(w.map { w in has ? "\(w)-bit integer for this track" : "\(w)-bit asked for, but the DAC has no \(w)-bit integer format; current format" } ?? "off")")
+        }
+        wantBits = w
     }
 
     /// Where B should stop for a skip reported late: the earliest gap A saw in the last 0.6 s that B
@@ -1737,7 +1800,7 @@ final class VirtualDeviceEngine {
         latchZeros.store(0, ordering: .releasing); gate.store(0, ordering: .releasing)
         gatePending = false; gateMarkedAt = nil; armAt = nil; armedAt = nil; latchedAt = nil
         let reached = wait(1) { self.atBoundary.load(ordering: .acquiring) != 0 }
-        let change = r != curRate || CA.nominal(dac) != r
+        let change = r != curRate || CA.nominal(dac) != r || formatDiffers(r, want: wantBits)
         log("switch \(switches): \(name) \(change ? "needs \(Int(r)) Hz (DAC \(Int(curRate)))" : "restarts at \(Int(r)) Hz (no rate change)"); \(how); paused; boundary \(reached ? "reached" : "NOT reached") \(ms(t))")
         dropInput.store(1, ordering: .releasing) // the DAC can take seconds; don't let the ring overflow with zeros
         if change { outFormat.store(0, ordering: .releasing); applyRate(r) }
@@ -1832,8 +1895,8 @@ final class VirtualDeviceEngine {
             // decoder lines belong to the old session (one was taken 264 s later): gate the next
             // play, wait longer than usual for its Playing, and forget the old lines.
             if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("Music quit") }
-            awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil
-            decoderRates = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
+            awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil; lossyStartAt = nil
+            decoderRates = []; preRollLines = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
             if !gatePending { gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing) }
             gateWaitsForMusic = true
             trimIdle.store(1, ordering: .releasing)
@@ -2203,6 +2266,9 @@ final class TPDFDither: ObservableObject, @unchecked Sendable {
     var isOn: Bool { on.load(ordering: .relaxed) != 0 }
     func set(_ value: Bool) { on.store(value ? 1 : 0, ordering: .relaxed) }
     @Published var dacBits: Int?
+    /// The last confirmed DAC offers at least one integer non-mixable format (Integer Mode is shown);
+    /// nil until a DAC is confirmed. Kept while the DAC is released.
+    @Published var dacHasInt: Bool?
 
     /// One TPDF sample in LSBs: the difference of two uniforms in [0, 1), range (-1, 1).
     @inline(__always)

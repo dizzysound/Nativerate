@@ -22,6 +22,7 @@ class Defaults: ObservableObject {
     static let kOvershootProtection = "OvershootProtection"
     static let kTPDFDither = "TPDFDither"
     static let kSoftwareVolume = "SoftwareVolume"
+    static let kIntegerMode = "RendererIntegerMode"
     static let kSwitchMargin = "RendererSwitchMargin"
     
     private init() {
@@ -35,7 +36,8 @@ class Defaults: ObservableObject {
             Self.kRendererReleaseWhenIdle : true,
             Self.kOvershootProtection : false,
             Self.kTPDFDither : false,
-            Self.kSoftwareVolume : false
+            Self.kSoftwareVolume : false,
+            Self.kIntegerMode : false
         ])
         
         self.shellScriptPath = UserDefaults.standard.string(forKey: kShellScriptPath)
@@ -51,6 +53,7 @@ class Defaults: ObservableObject {
         self.overshootProtection = UserDefaults.standard.bool(forKey: Self.kOvershootProtection)
         self.tpdfDither = UserDefaults.standard.bool(forKey: Self.kTPDFDither)
         self.softwareVolume = UserDefaults.standard.bool(forKey: Self.kSoftwareVolume)
+        self.integerMode = UserDefaults.standard.bool(forKey: Self.kIntegerMode)
         OvershootProtection.shared.set(self.overshootProtection)
         TPDFDither.shared.set(self.tpdfDither)
         SoftwareVolume.shared.set(self.softwareVolume)
@@ -77,6 +80,15 @@ class Defaults: ObservableObject {
         willSet {
             UserDefaults.standard.set(newValue, forKey: Self.kSoftwareVolume)
             SoftwareVolume.shared.set(newValue)
+        }
+    }
+
+    /// Exclusive Mode, Advanced (Integer Mode): a lossless track plays in the DAC's non-mixable integer
+    /// format of its own depth (16, 24 or 32 bit) when the DAC has one (the engine reads the key at each
+    /// track's switch decision).
+    @Published var integerMode: Bool {
+        willSet {
+            UserDefaults.standard.set(newValue, forKey: Self.kIntegerMode)
         }
     }
 

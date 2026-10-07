@@ -214,6 +214,11 @@ struct MenuView: View {
 
             Section("Advanced") {
                 dacInfoMenu
+                if defaults.userPreferRendererEngine, dither.dacHasInt == true {
+                    // only for a DAC with an integer format (a float-only DAC has nothing to match)
+                    Toggle("Integer Mode", isOn: $defaults.integerMode)
+                        .help("A lossless track plays in the DAC's integer format of the same bit depth (16, 24 or 32 bit), so a DAC-side bit-perfect test (Naim, RME) sees the track's depth. If the DAC has no integer format of that depth, the current format stays. Takes effect at the next track. Keep Music's volume at 100 and Sound Check and EQ off, or turn on TPDF dither: else the altered samples are rounded to the track's depth.")
+                }
                 driverMenu
                 scriptMenu
             }
