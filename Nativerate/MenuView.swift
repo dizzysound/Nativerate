@@ -6,6 +6,8 @@
 //
 
 import SwiftUI
+import CoreAudio
+import SimplyCoreAudio
 
 /// A menu-style MenuBarExtra is a native NSMenu: an Image(systemName: "checkmark") inside a Button's
 /// label is not drawn there (on the Babyface bench, macOS 27, no option showed as selected). Toggles
@@ -20,6 +22,7 @@ struct MenuView: View {
     @ObservedObject private var dither = TPDFDither.shared
     @ObservedObject private var logExport = LogExport.shared
     @ObservedObject private var otherApps = OtherAppsOutput.shared
+    @ObservedObject private var renderer = RendererOutput.shared
     
     /// Hover text for TPDF Dither: what it does and what it means for the DAC in use (the title
     /// used to carry the DAC's depth, which read as the track's).
@@ -198,6 +201,13 @@ struct MenuView: View {
                 } label: {
                     Text("Scripting")
                 }
+
+                Menu {
+                    let info = DACInfo.lines(for: renderer.dacID ?? (outputDevices.selectedOutputDevice ?? outputDevices.defaultOutputDevice)?.id)
+                    ForEach(info.indices, id: \.self) { Text(info[$0]) }
+                } label: {
+                    Text("DAC Info")
+                }
             } label: {
                 Text("Advanced")
             }
@@ -219,5 +229,49 @@ struct MenuView: View {
                 Text("Quit Nativerate")
             }
         }
+    }
+}
+
+/// Advanced > DAC Info: what the selected device offers, read from its output streams' physical
+/// formats when the menu is built.
+enum DACInfo {
+    static func lines(for device: AudioObjectID?) -> [String] {
+        guard let d = device else { return ["No device"] }
+        var lines = [CA.string(d, kAudioObjectPropertyName)]
+        let nominal = CA.nominal(d)
+        if nominal > 0 { lines.append("Current: \(khz(nominal))") }
+
+        let formats = CA.streams(d, kAudioObjectPropertyScopeOutput).flatMap { CA.availablePhysicalFormats($0) }
+            .filter { $0.mFormat.mFormatID == kAudioFormatLinearPCM }
+        guard !formats.isEmpty else { return lines + ["No formats reported"] }
+
+        // one line per bit depth (integer or float), with the rates that depth plays at
+        let nominalRates = CA.nominalRates(d)
+        var byDepth: [String: Set<Float64>] = [:]
+        var order: [String] = []
+        for r in formats {
+            let f = r.mFormat
+            let float = f.mFormatFlags & kAudioFormatFlagIsFloat != 0
+            let key = "\(f.mBitsPerChannel)-bit\(float ? " float" : "")"
+            if byDepth[key] == nil { order.append(key) }
+            // a ranged format (min < max) covers the device's listed rates inside that range
+            let lo = r.mSampleRateRange.mMinimum, hi = r.mSampleRateRange.mMaximum
+            let own = f.mSampleRate > 0 ? [f.mSampleRate] : []
+            byDepth[key, default: []].formUnion(([lo, hi] + own).filter { $0 > 0 } + nominalRates.filter { $0 >= lo && $0 <= hi })
+        }
+        order.sort { (bits($0), $0) < (bits($1), $1) }
+        lines.append("Bit depths: " + order.joined(separator: ", "))
+        for key in order {
+            lines.append("\(key): " + byDepth[key]!.sorted().map(khz).joined(separator: ", "))
+        }
+        if !nominalRates.isEmpty { lines.append("Sample rates: " + Set(nominalRates).sorted().map(khz).joined(separator: ", ")) }
+        return lines
+    }
+
+    private static func bits(_ key: String) -> Int { Int(key.prefix { $0.isNumber }) ?? 0 }
+
+    private static func khz(_ hz: Float64) -> String {
+        let k = hz / 1000
+        return (k == k.rounded() ? String(Int(k)) : String(format: "%g", k)) + " kHz"
     }
 }

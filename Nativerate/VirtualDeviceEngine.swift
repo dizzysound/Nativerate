@@ -623,7 +623,7 @@ final class VirtualDeviceEngine {
         let st = AudioObjectSetPropertyData(d, &a, 0, nil, 4, &me)
         hogged = CA.hogOwner(d) == getpid()
         log("hog DAC: \(st), \(hogged ? "hogged" : "NOT hogged (shared mode, mixable)")")
-        RendererOutput.shared.set(dacName: CA.string(d, kAudioObjectPropertyName))
+        RendererOutput.shared.set(dacName: CA.string(d, kAudioObjectPropertyName), id: d)
         let rate = CA.nominal(d)
         if !CA.nominalRates(ls).contains(rate) { log("virtual device can't run at \(rate) Hz; Music will be resampled into it") }
         applyRate(rate)
@@ -811,7 +811,7 @@ final class VirtualDeviceEngine {
             log("hog released: \(st), owner \(CA.hogOwner(dac))")
             hogged = false
         }
-        RendererOutput.shared.set(dacName: nil)
+        RendererOutput.shared.set(dacName: nil, id: nil)
     }
 
     /// Every exit path: IO stopped, DAC mixable and released, scalar reset, default output restored.
@@ -3170,6 +3170,8 @@ struct MusicSettingsView: View {
 final class RendererOutput: ObservableObject {
     static let shared = RendererOutput()
     @Published private(set) var dacName: String?
+    /// The held DAC's device ID, for Advanced > DAC Info (the default output is then the virtual device).
+    @Published private(set) var dacID: AudioObjectID?
     /// The playing track's source, as the engine decided it: its bit depth (nil: not known) and
     /// whether it's lossy (AAC has no bit depth). The menu shows it while the engine holds a DAC.
     @Published private(set) var sourceBits: Int?
@@ -3208,8 +3210,11 @@ final class RendererOutput: ObservableObject {
     }
 
     /// Any thread.
-    func set(dacName name: String?) {
-        DispatchQueue.main.async { if self.dacName != name { self.dacName = name } }
+    func set(dacName name: String?, id: AudioObjectID?) {
+        DispatchQueue.main.async {
+            if self.dacName != name { self.dacName = name }
+            if self.dacID != id { self.dacID = id }
+        }
     }
 
     /// Any thread.
