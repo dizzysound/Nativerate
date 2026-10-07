@@ -193,6 +193,8 @@ struct MenuView: View {
             if defaults.userPreferRendererEngine {
                 Section("Exclusive Mode") {
                     Toggle("Release DAC when Music is idle", isOn: $defaults.rendererReleaseWhenIdle)
+                    Toggle("Software volume", isOn: $defaults.softwareVolume)
+                        .help(softwareVolumeHelp)
                     Menu {
                         ForEach(SwitchGap.allCases, id: \.self) { m in
                             Toggle("\(m.rawValue) (\(String(format: "%.2f", m.margin)) s)", isOn: Binding(get: { defaults.switchMargin == m }, set: { if $0 { defaults.switchMargin = m } }))
@@ -207,8 +209,6 @@ struct MenuView: View {
                     Toggle("TPDF dither", isOn: $defaults.tpdfDither)
                         .disabled((dither.dacBits ?? 32) >= 32)
                         .help(ditherHelp)
-                    Toggle("Software volume when the DAC has none", isOn: $defaults.softwareVolume)
-                        .help(softwareVolumeHelp)
                 }
             }
 

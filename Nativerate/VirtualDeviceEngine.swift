@@ -2126,7 +2126,7 @@ final class VirtualDeviceEngine {
 
 // MARK: - Output format for B
 
-/// Settings > Exclusive Mode > Software volume when the DAC has none: for a DAC with no settable volume, B scales its
+/// Settings > Exclusive Mode > Software volume: for a DAC with no settable volume, B scales its
 /// output by the virtual device's volume (linear in dB, 0 to -64 dB, the slider VolumeForwarder
 /// maps), and mutes by writing silence (the mute works with the setting off too). At 0 dB nothing is
 /// multiplied, so the output stays bit-perfect; below it the samples are scaled and dithered when
