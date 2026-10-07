@@ -24,7 +24,7 @@ body:
     attributes:
       label: Result
       options:
-        - Works, Bit-Perfect Check passes
+        - Works, Bit-perfect check passes
         - Works with problems (describe below)
         - Does not work
     validations:

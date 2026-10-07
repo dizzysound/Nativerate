@@ -21,7 +21,7 @@
 //    the new track's rate is known, so a wrong-rate start never reaches the DAC.
 //  Same-rate changes, gapless albums and pause/resume pass through untouched.
 //  Volume keys: the virtual device's volume and mute drive the DAC's own controls (VolumeForwarder). A DAC
-//  with no volume gets silence for mute, and, if Advanced > Software Volume is on, a gain in B (SoftwareVolume).
+//  with no volume gets silence for mute, and, if Settings > Exclusive Mode > Software volume is on, a gain in B (SoftwareVolume).
 //  Music only (plug-in 1.1.4, 'LSmx' = Music's pid): the plug-in moves every other app's output to the
 //  loopback's channels 3-4, so the DAC gets Music alone; OthersPlayer plays those on the built-in
 //  speakers, and alert sounds move there too (restored on stop and at launch after an unclean exit).
@@ -221,7 +221,7 @@ final class VirtualDeviceEngine {
     private var musicOnlyMissingLogged = false
     private let others = OthersPlayer()
     private var othersDevice = AudioObjectID(0) // where other apps should play (0: nowhere); kept while the player is down
-    private var othersChoice: String? // the Other Apps & Alerts choice startOthers followed
+    private var othersChoice: String? // the Other apps and alerts choice startOthers followed
     private var othersRestartAt = Date.distantPast
     private let othersFeed = Atomic<Int>(0) // 1: A writes loopback channels 3-4 into others.ring
     private let othersPeakA = Atomic<UInt32>(0) // A: peak |sample| on channels 3-4 since the last meter line (Float bits)
@@ -686,12 +686,12 @@ final class VirtualDeviceEngine {
         let margin = (SwitchGap(rawValue: UserDefaults.standard.string(forKey: Defaults.kSwitchMargin) ?? "") ?? .normal).margin
         targetFillA.store(fixedTarget ?? Int(rate * margin), ordering: .releasing)
         gapLen.store(max(Int(0.01 * rate), 1), ordering: .releasing)
-        setReportedLatency(targetFill)
         // the menu bar's rate: with Exclusive Mode on, OutputDevices' own detection is off and it only
         // re-reads a device when the default output changes, so a switch mid-session never reached it
         // (pastor Mac: "it's clearly switching but the taskbar is not")
         outputDevices.updateSampleRate(rate, bitDepth: nil)
         if others.isRunning, others.rate != rate { restartOthers("the virtual device's rate is now \(Int(rate)) Hz") }
+        refreshReportedLatency()
     }
 
     /// Scripting menu: the regular path runs the user's script (rate, bit depth) when it sets a new
@@ -914,7 +914,7 @@ final class VirtualDeviceEngine {
 
     /// 'LSmx' = Music's pid while the engine plays; our own pid while Music isn't running (no client
     /// of ours plays into the device, so every app goes to the speakers). Plug-in older than 1.1.4:
-    /// other apps still mix into Music (logged once; the Bit-Perfect Check says so).
+    /// other apps still mix into Music (logged once; the Bit-perfect check says so).
     private func syncMusicOnly() {
         guard procA != nil, ls != 0 else { return }
         var a = CA.addr(Self.kMusicOnly)
@@ -968,11 +968,13 @@ final class VirtualDeviceEngine {
         if let t = target, t == othersDevice, others.isRunning {
             othersFeed.store(1, ordering: .releasing)
             moveAlerts(to: t)
+            refreshReportedLatency()
             return
         }
         guard let sp = target else {
             log("other apps: MUTED (\(note)); Music alone reaches the DAC")
             RendererOutput.shared.set(othersRoute: "Other apps muted", ok: true)
+            refreshReportedLatency()
             // alert sounds still leave the DAC: to the built-in speakers if there are any
             if let b = Self.builtInSpeakers(excluding: dac) { moveAlerts(to: b) }
             return
@@ -984,15 +986,17 @@ final class VirtualDeviceEngine {
         if others.start(device: sp, rate: curRate, log: { [unowned self] in self.log($0) }) {
             othersFeed.store(1, ordering: .releasing)
             RendererOutput.shared.set(othersRoute: "Other apps play on \(name)", ok: true)
+            refreshReportedLatency()
         } else {
             log("other apps: MUTED (the player on \(name) didn't start)")
             RendererOutput.shared.set(othersRoute: "Other apps muted (\(name) didn't start)", ok: true)
+            refreshReportedLatency()
         }
         OtherAppsOutput.shared.setActive(sp)
         moveAlerts(to: sp)
     }
 
-    /// Engine thread, each second: the Other Apps & Alerts choice changed, or the chosen device came
+    /// Engine thread, each second: the Other apps and alerts choice changed, or the chosen device came
     /// back or went away: play other apps (and alerts) where it now says.
     private func followOthersChoice() {
         guard procB != nil, !inRoutine else { return }
@@ -1021,7 +1025,7 @@ final class VirtualDeviceEngine {
         othersRestartAt = Date()
         log("other apps: restarting the player (\(why))")
         othersFeed.store(0, ordering: .releasing)
-        if others.start(device: d, rate: curRate, log: { [unowned self] in self.log($0) }) { othersFeed.store(1, ordering: .releasing) }
+        if others.start(device: d, rate: curRate, log: { [unowned self] in self.log($0) }) { othersFeed.store(1, ordering: .releasing); refreshReportedLatency() }
     }
 
     /// Every 0.5 s: the speakers' varispeed follows the others ring's fill (the two clocks drift).
@@ -1293,7 +1297,7 @@ final class VirtualDeviceEngine {
     }
 
     /// Music's readable settings that change samples are all off: volume 100, Sound Check and Sound
-    /// Enhancer off (EQ can't be read; the Bit-Perfect Check asks to check it).
+    /// Enhancer off (EQ can't be read; the Bit-perfect check asks to check it).
     private func musicLeavesSamplesAlone() -> Bool {
         let app = "com.apple.Music" as CFString
         CFPreferencesAppSynchronize(app)
@@ -1350,7 +1354,7 @@ final class VirtualDeviceEngine {
         }
         // The track's own decoder can come just after the decision, which took it as lossless for want
         // of a line (pastor: "Uniform", lossy line 18 ms later; its samples fit no grid and the
-        // Bit-Perfect Check blamed Music). A lossy line at its rate in its own window says otherwise;
+        // Bit-perfect check blamed Music). A lossy line at its rate in its own window says otherwise;
         // a later lossless line upgrades it as usual (lossyTrackAt).
         if !lossless, !sourceLossy, rate == trackRate, let own = ownLinesUntil, at <= own {
             log("the track's own decoder is lossy (\(Int(rate)) Hz)")
@@ -1456,7 +1460,7 @@ final class VirtualDeviceEngine {
     /// Music idle for `after` seconds: release the DAC (hog released, mixable, emulated mute undone), so
     /// it's free for other apps that pick it, and the Sound menu works (picking a hogged DAC there
     /// hangs Control Center). The default output stays on the virtual device, A keeps reading it and
-    /// other apps keep playing where Other Apps & Alerts says. It used to give the default back too:
+    /// other apps keep playing where Other apps and alerts says. It used to give the default back too:
     /// then a play started Music on that device until the take-back paused it (pastor Mac, 2026-09-30:
     /// ~1 s of Music on the MacBook Pro speakers, the default from before). Now Music's first moments
     /// go into the virtual device, where A drops them, and the take-back rewinds.
@@ -1471,11 +1475,12 @@ final class VirtualDeviceEngine {
         steppedAside = true
         probeAfterStepAside()
         othersToDACWhileIdle()
+        refreshReportedLatency()
     }
 
     /// While stepped aside the DAC is free and Music is idle: other apps play on it (shared, mixable),
     /// as before the release-only step-aside (owner, coffee 2026-10-01: YouTube while Music is idle
-    /// belongs on the DAC). "Mute Other Apps" stays muted. The take-back moves them off it first.
+    /// belongs on the DAC). "Mute other apps" stays muted. The take-back moves them off it first.
     private func othersToDACWhileIdle() {
         guard dac != 0, CA.string(dac, kAudioDevicePropertyDeviceUID) == dacUID,
               UserDefaults.standard.string(forKey: OtherAppsOutput.choiceKey) != OtherAppsOutput.mute else { return }
@@ -1490,6 +1495,7 @@ final class VirtualDeviceEngine {
             OtherAppsOutput.shared.setActive(dac)
             RendererOutput.shared.set(othersRoute: "Other apps play on \(name) (Music idle)", ok: true)
             log("other apps -> \(name) while Music is idle")
+            refreshReportedLatency()
         } else {
             log("other apps: couldn't play on \(name) while idle; staying where they were")
             othersDevice = 0
@@ -1508,7 +1514,7 @@ final class VirtualDeviceEngine {
         guard let d = selectedDAC() ?? picked ?? (dacOK ? dac : chooseDAC()) else { log("no output device to play to"); return false }
         reclaimDefault()
         // other apps were on the DAC while idle: off it before it's taken (setUpDAC refuses a DAC
-        // another client still plays to); setUpDAC puts them back where Other Apps & Alerts says
+        // another client still plays to); setUpDAC puts them back where Other apps and alerts says
         if othersDevice == d || othersDevice == dac { stopOthers() }
         // a gate or latch from before the step-aside can't be reached (A dropped everything since):
         // the switch would wait 1 s for it (pastor, 2026-09-30: "boundary NOT reached 1.009 s")
@@ -1733,6 +1739,32 @@ final class VirtualDeviceEngine {
     /// Plug-in 1.1.6: the device reports B's trail as its output latency, so video stays in sync.
     private static let kLatency: AudioObjectPropertySelector = 0x4C53_6C74 // 'LSlt'
     private var reportedLatency = -1
+    /// What video apps playing to the virtual device should assume: Music's switch margin when other apps
+    /// share Music's path (old driver), else the way other apps really go: the loopback read, the
+    /// player's ring, and the output device's own presentation delay (the app can't know that one).
+    /// `LipSyncTrimMs` (hidden) shifts it for a bench.
+    private func refreshReportedLatency() {
+        guard others.isRunning, othersDevice != 0, othersFeed.load(ordering: .relaxed) != 0, curRate > 0 else {
+            setReportedLatency(isMusicOnlyDriver ? 0 : targetFill)
+            return
+        }
+        let rate = curRate
+        let destRate = max(CA.nominal(othersDevice), 1)
+        let dest = Int(Double(CA.presentationFrames(othersDevice, kAudioObjectPropertyScopeOutput)) * rate / destRate)
+        let loop = Int(Double(CA.presentationFrames(ls, kAudioObjectPropertyScopeInput)) * rate / max(CA.nominal(ls), 1))
+        let trim = Int(UserDefaults.standard.double(forKey: "LipSyncTrimMs") * rate / 1000)
+        let total = max(0, others.latencyFrames + dest + loop + trim)
+        if total != reportedLatency {
+            log("lip sync: other apps' delay \(total) frames = player ring \(others.latencyFrames) + \(CA.string(othersDevice, kAudioObjectPropertyName)) \(dest) + loopback read \(loop)\(trim != 0 ? " + trim \(trim)" : "")")
+        }
+        setReportedLatency(total)
+    }
+
+    private var isMusicOnlyDriver: Bool {
+        var a = CA.addr(Self.kMusicOnly)
+        return ls != 0 && AudioObjectHasProperty(ls, &a)
+    }
+
     private func setReportedLatency(_ frames: Int) {
         guard ls != 0, frames != reportedLatency else { return }
         var a = CA.addr(Self.kLatency)
@@ -2188,7 +2220,7 @@ final class VirtualDeviceEngine {
 
 // MARK: - Output format for B
 
-/// Advanced > Software Volume When the DAC Has None: for a DAC with no settable volume, B scales its
+/// Settings > Exclusive Mode > Software volume: for a DAC with no settable volume, B scales its
 /// output by the virtual device's volume (linear in dB, 0 to -64 dB, the slider VolumeForwarder
 /// maps), and mutes by writing silence (the mute works with the setting off too). At 0 dB nothing is
 /// multiplied, so the output stays bit-perfect; below it the samples are scaled and dithered when
@@ -2210,7 +2242,7 @@ final class SoftwareVolume: @unchecked Sendable {
 }
 
 /// How B writes a stereo float frame into the DAC's buffers, packed into one Int for the IO thread.
-/// Advanced > Inter-sample Overshoot Protection: a fixed -3.0 dB (x0.7079) on Exclusive Mode's output
+/// Settings > Exclusive Mode > Inter-sample overshoot protection: a fixed -3.0 dB (x0.7079) on Exclusive Mode's output
 /// to the DAC, for loud masters whose reconstructed waveform peaks above full scale between samples
 /// (clipping in the DAC's filter). Off by default; when on, the output is no longer bit-perfect.
 /// Off, nothing is multiplied. Read by both engines' IO threads.
@@ -2222,7 +2254,7 @@ final class OvershootProtection: @unchecked Sendable {
     func set(_ value: Bool) { on.store(value ? 1 : 0, ordering: .relaxed) }
 }
 
-/// Advanced > TPDF Dither: triangular (±1 LSB) dither when B requantizes to an integer DAC under 32
+/// Settings > Exclusive Mode > TPDF dither: triangular (±1 LSB) dither when B requantizes to an integer DAC under 32
 /// bits. Only a buffer that can't be written exactly gets it (the overshoot gain is on, or the source
 /// has more bits than the DAC), so bit-perfect output and digital silence stay untouched. Off by
 /// default. Exclusive Mode only: the process-tap engine writes float and the HAL converts.
@@ -2370,6 +2402,7 @@ final class OthersPlayer {
     deinit { stop(); scratch.deallocate() }
 
     var isRunning: Bool { engine?.isRunning ?? false }
+    var latencyFrames: Int { engine == nil ? 0 : target }
     var status: String {
         guard engine != nil else { return "other apps: no player" }
         return "other apps: fill \(ring.fill) (target \(target)), varispeed \(String(format: "%.6f", lastRate)), dry \(rs.restarts.load(ordering: .relaxed))x, over \(ring.overruns.load(ordering: .relaxed))"
@@ -2691,6 +2724,18 @@ enum CA {
 
     static func nominal(_ d: AudioObjectID) -> Float64 { DeviceFormat.nominalSampleRate(d) ?? 0 }
 
+    static func uint32(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope) -> UInt32 {
+        var v = UInt32(0); var a = addr(sel, scope); var z = UInt32(4)
+        return AudioObjectGetPropertyData(obj, &a, 0, nil, &z, &v) == noErr ? v : 0
+    }
+
+    /// What an app playing to `d` assumes of it: latency + safety offset + stream latency + buffer (frames).
+    static func presentationFrames(_ d: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int {
+        let st = streams(d, scope).first.map { uint32($0, kAudioStreamPropertyLatency, kAudioObjectPropertyScopeGlobal) } ?? 0
+        return Int(uint32(d, kAudioDevicePropertyLatency, scope) + uint32(d, kAudioDevicePropertySafetyOffset, scope)
+            + st + uint32(d, kAudioDevicePropertyBufferFrameSize, scope))
+    }
+
     static func setNominal(_ d: AudioObjectID, _ hz: Float64) -> OSStatus {
         var r = hz; var a = addr(kAudioDevicePropertyNominalSampleRate)
         return AudioObjectSetPropertyData(d, &a, 0, nil, 8, &r)
@@ -2789,8 +2834,8 @@ enum CA {
 /// Option+Shift step), the same mapping plug-in 1.1.3 reports, so the virtual device reads the DAC's
 /// own level and never above 0 dB; the bottom is the DAC's minimum. The DAC's own taper made one step
 /// 8-9.5 dB on the Babyface. A DAC without dB controls gets the slider's value as its scalar.
-/// A DAC with no settable volume: mute outputs silence (SoftwareVolume, B). With Advanced > Software
-/// Volume on, the slider scales B's output by the same mapping (0 dB is unity and untouched); with it
+/// A DAC with no settable volume: mute outputs silence (SoftwareVolume, B). With Settings > Exclusive Mode > Software
+/// volume on, the slider scales B's output by the same mapping (0 dB is unity and untouched); with it
 /// off, the virtual device is held at 0 dB, nothing attenuates, and the first volume key press that changes
 /// the volume or the mute shows a notice that says so. Stop leaves the virtual device at 0 dB, unmuted.
 /// A DAC without a mute is muted by setting its volume to the minimum; unmute and stop restore the
@@ -2886,7 +2931,7 @@ final class VolumeForwarder {
         }
     }
 
-    /// Engine thread, when Advanced > Software Volume changes: a DAC with no volume starts or stops scaling.
+    /// Engine thread, when Settings > Exclusive Mode > Software volume changes: a DAC with no volume starts or stops scaling.
     func softwareVolumeChanged() {
         queue.async { if self.active && self.pinned { self.pushPinned(fromKey: false) } }
     }
@@ -2976,7 +3021,7 @@ final class VolumeForwarder {
         }
     }
 
-    /// Hands B the gain for a slider position (1 at the top, so nothing is multiplied) and the Bit-Perfect Check its line.
+    /// Hands B the gain for a slider position (1 at the top, so nothing is multiplied) and the Bit-perfect check its line.
     private func applySoftware(level: Float32, muted: Bool) {
         let unity = level >= 1 - Self.tolerance
         let gain: Float = unity ? 1 : level <= 0.001 ? 0 : Float(pow(10, Double(topDB - (1 - level) * rangeDB) / 20))
@@ -2996,7 +3041,7 @@ final class VolumeForwarder {
         noticePending = true
         let uid = dacUID
         let name = CA.string(dac, kAudioObjectPropertyName)
-        let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software Volume under Advanced, or use the DAC's knob or your amplifier."
+        let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software volume under Settings, or use the DAC's knob or your amplifier."
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert]) { [weak self] ok, _ in
             self?.queue.async {
@@ -3235,7 +3280,7 @@ struct MusicSettingsView: View {
 final class RendererOutput: ObservableObject {
     static let shared = RendererOutput()
     @Published private(set) var dacName: String?
-    /// The held DAC's device ID, for Advanced > DAC Info (the default output is then the virtual device).
+    /// The held DAC's device ID, for Settings > Advanced > DAC info (the default output is then the virtual device).
     @Published private(set) var dacID: AudioObjectID?
     /// The playing track's source, as the engine decided it: its bit depth (nil: not known) and
     /// whether it's lossy (AAC has no bit depth). The menu shows it while the engine holds a DAC.
@@ -3258,7 +3303,7 @@ final class RendererOutput: ObservableObject {
         DispatchQueue.main.async { if self.offGrid != v { self.offGrid = v } }
     }
 
-    /// Where other apps' audio goes while the engine holds the DAC (Bit-Perfect Check); nil otherwise.
+    /// Where other apps' audio goes while the engine holds the DAC (Bit-perfect check); nil otherwise.
     @Published private(set) var othersRoute: (text: String, ok: Bool)?
 
     /// Any thread.
@@ -3266,7 +3311,7 @@ final class RendererOutput: ObservableObject {
         DispatchQueue.main.async { if self.othersRoute?.text != text { self.othersRoute = text.map { ($0, ok) } } }
     }
 
-    /// Exclusive Mode's software volume while it scales the output (Bit-Perfect Check); nil at 0 dB.
+    /// Exclusive Mode's software volume while it scales the output (Bit-perfect check); nil at 0 dB.
     @Published private(set) var softwareVolume: String?
 
     /// Any thread.
