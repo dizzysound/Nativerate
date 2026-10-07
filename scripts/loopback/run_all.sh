@@ -7,7 +7,9 @@ set -u
 cd "$(dirname "$0")"
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
 DEV="${DEV:-Babyface Pro (73020432)}"
-CH="${CH:-14}"
+# sox (coreaudio) records only the first 2 inputs, so loopback must land on input AN 1/2:
+# TotalMix Loopback on the Main / AN 1/2 output.
+CH="${CH:-2}"
 RATES="${*:-44100 48000 88200 96000 176400 192000}"
 [ -d signals ] || python3 make_signal.py signals
 mkdir -p rec
