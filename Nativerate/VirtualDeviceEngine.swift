@@ -677,7 +677,7 @@ final class VirtualDeviceEngine {
             nonMixable = f.mFormatFlags & kAudioFormatFlagIsNonMixable != 0
             log("DAC format -> \(CA.fmt(f)): \(st)")
             runUserScript(rate, bits: Int(f.mBitsPerChannel))
-            appliedWant = wantBits
+            if st == noErr { appliedWant = wantBits }   // a refused format is not applied
         } else if CA.nominal(dac) != rate {
             log("DAC has no listed format at \(rate) Hz; nominal rate -> \(CA.setNominal(dac, rate))")
             runUserScript(rate, bits: nil)

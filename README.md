@@ -35,7 +35,11 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
   volume when the DAC has none** (off by default): the keys then scale the output, 0 to -64 dB in 4 dB
   steps. At 0 dB the output is untouched and bit-perfect; below it the samples are scaled (and dithered
   on an integer DAC), so it is not, and Bit-perfect check says so. A 24-bit DAC playing 16-bit tracks has 8
-  spare bits, so about -48 dB keeps all of the music's resolution. Or use the DAC's own knob or your amplifier's.
+  spare bits, so about -48 dB keeps all of the music's resolution (not with Integer Mode on: the output then has the track's depth). Or use the DAC's own knob or your amplifier's.
+- Optional, off by default: **Settings > Advanced > Integer Mode** (shown only for a DAC with an integer
+  format): a lossless track plays in the DAC's integer format of its own depth (16, 24 or 32 bit), so a
+  DAC-side bit-perfect test sees the track's depth. With no format of that depth, the widest stays. Keep
+  Music's volume at 100 and Sound Check and EQ off, or turn on TPDF dither.
 - After 60 s without playback it gives the DAC and the default output back ("Settings > Release DAC when
   Music is idle"), and takes them again when Music plays (about 2 s from play to sound on the
   Babyface Pro).
