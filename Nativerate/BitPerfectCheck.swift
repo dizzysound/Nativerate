@@ -36,6 +36,7 @@ final class BitPerfectCheck: ObservableObject {
     private var othersRouteSink: AnyCancellable?
     private var offGridSink: AnyCancellable?
     private var nearGridSink: AnyCancellable?
+    private var dacSink: AnyCancellable?
     private var softwareVolumeSink: AnyCancellable?
     private var lastRefresh = Date.distantPast // main thread only
 
@@ -58,6 +59,10 @@ final class BitPerfectCheck: ObservableObject {
             self?.refreshAfterDeviceChange()
         }
         offGridSink = RendererOutput.shared.$offGrid.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.refreshAfterDeviceChange()
+        }
+        // the DAC Exclusive Mode holds (the default output is then the virtual device)
+        dacSink = RendererOutput.shared.$dacID.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
             self?.refreshAfterDeviceChange()
         }
         nearGridSink = RendererOutput.shared.$nearGrid.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
@@ -142,7 +147,7 @@ final class BitPerfectCheck: ObservableObject {
             items.append(Item(id: "overshoot", ok: false, text: "Inter-sample overshoot protection on (output -3.0 dB, not bit-perfect)"))
         }
 
-        if let outputDevice, isFloatOnly(outputDevice) {
+        if let dac = RendererOutput.shared.dacID ?? outputDevice, isFloatOnly(dac) {
             // Music always sends 32-bit float, so float output needs no conversion.
             items.append(Item(id: "floatOnly", ok: true, text: "DAC takes 32-bit float only: 16- and 24-bit samples pass unchanged"))
         }
@@ -171,7 +176,10 @@ final class BitPerfectCheck: ObservableObject {
     }
 
     /// The device offers PCM formats, all of them float (no integer format to play).
+    /// Skips the virtual device and aggregates: both list float only, whatever the DAC behind them takes.
     private static func isFloatOnly(_ device: AudioObjectID) -> Bool {
+        guard CA.string(device, kAudioDevicePropertyDeviceUID) != VirtualDeviceEngine.deviceUID,
+              CA.transport(device) != kAudioDeviceTransportTypeAggregate else { return false }
         let formats = CA.streams(device, kAudioObjectPropertyScopeOutput).flatMap { CA.availablePhysicalFormats($0) }
             .map(\.mFormat).filter { $0.mFormatID == kAudioFormatLinearPCM }
         return !formats.isEmpty && formats.allSatisfy { $0.mFormatFlags & kAudioFormatFlagIsFloat != 0 }
