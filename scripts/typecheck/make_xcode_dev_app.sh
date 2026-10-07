@@ -38,12 +38,12 @@ Universal (Apple Silicon and Intel). Ad-hoc signed: each copy asks again for Mic
 1. Unzip anywhere local (~/Applications is good; not an iCloud-synced Desktop or Documents).
 2. Right-click the app > Open the first time (or: xattr -dr com.apple.quarantine "$APP.app").
 3. $RUN No setup script is needed.
-4. Menu-bar item (a music note; on a notched MacBook it can hide under the notch):
+4. Menu-bar item (a speaker icon; on a notched MacBook it can hide under the notch):
    Install Exclusive Mode Driver... (administrator password; audio restarts for a moment; it turns
    Exclusive Mode on). Allow Microphone and Automation.
 Engine log: ~/Library/Logs/Nativerate-ExclusiveMode.log
-Remove: menu Advanced > Virtual Output Device > Remove..., then delete the app.
-If something goes wrong: menu About > Export Logs..., and send the zip with what you did.
+Remove: menu Settings > Advanced > Exclusive Mode driver > Remove..., then delete the app.
+If something goes wrong: menu About Nativerate > Export logs..., and send the zip with what you did.
 TXT
 # the tester's brief lives in the private research repo, if it is checked out beside this one
 BRIEF="${BENCH_BRIEF:-../Nativerate-research/renderer-engine/BENCH-BRIEF.md}"

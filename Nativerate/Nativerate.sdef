@@ -6,7 +6,7 @@
             <cocoa class="Nativerate.ScriptableApplicationCommand"/>
             <result type="integer" description="sample rate"/>
         </command>
-        <command name="export logs" code="sdseexpl" description="writes the same zip as About > Export Logs… (engine logs, audio devices, settings, filtered system log) and returns its path; takes up to a few minutes">
+        <command name="export logs" code="sdseexpl" description="writes the same zip as About Nativerate > Export logs… (engine logs, audio devices, settings, filtered system log) and returns its path; takes up to a few minutes">
             <cocoa class="Nativerate.ExportLogsCommand"/>
             <parameter name="to" code="dest" type="text" optional="yes" description="zip path or folder (default: the Desktop)">
                 <cocoa key="destination"/>

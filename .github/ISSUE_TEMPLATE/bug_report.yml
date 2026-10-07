@@ -43,12 +43,12 @@ body:
   - type: textarea
     id: check
     attributes:
-      label: Bit-Perfect Check
-      description: Paste what the Bit-Perfect Check menu item reports.
+      label: Bit-perfect check
+      description: Paste what the Bit-perfect check menu item reports.
       render: text
   - type: markdown
     attributes:
       value: |
-        **Logs help most.** Choose **About > Export Logs…** in the menu and attach the zip here.
+        **Logs help most.** Choose **About Nativerate > Export logs…** in the menu and attach the zip here.
         It holds the engine logs, your output devices' formats, and the app's and Music's settings;
         look it over first if any of that is private.

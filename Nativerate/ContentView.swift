@@ -13,34 +13,17 @@ struct ContentView: View {
     @EnvironmentObject var outputDevices: OutputDevices
     @ObservedObject private var renderer = RendererOutput.shared
     
-    private var sampleRateText: String? {
-        guard let currentSampleRate = outputDevices.currentSampleRate else { return nil }
-        // Exclusive Mode: the source depth the engine decided (see SampleRateLabel)
-        if renderer.dacName != nil {
-            return String(format: "%.1f kHz / ", currentSampleRate) + renderer.sourceText
-        }
-        if outputDevices.enableBitDepthDetection {
-            if let bitDepth = outputDevices.currentBitDepth {
-                return String(format: "%.1f kHz / %d bit", currentSampleRate, bitDepth)
-            } else {
-                return String(format: "%.1f kHz / ? bit", currentSampleRate)
-            }
-        } else {
-            return String(format: "%.1f kHz", currentSampleRate)
-        }
-    }
-    
     var body: some View {
         VStack {
-            if let text = sampleRateText {
-                Text(text)
-                    .font(.system(size: 23, weight: .semibold, design: .default))
+            if outputDevices.currentSampleRate != nil {
+                SampleRateLabel()
+                    .font(.title2.weight(.semibold))
             }
             // the engine's DAC while it holds one (the default output is then its virtual device)
             if let name = renderer.dacName ?? (outputDevices.selectedOutputDevice ?? outputDevices.defaultOutputDevice)?.name {
-                Text(name)
-                    .font(.system(size: 14.5, weight: .regular, design: .default))
-                    .foregroundColor(.secondary)
+                Label(name, systemImage: "hifispeaker")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
         }

@@ -26,6 +26,6 @@ Custom properties (CFNumber / CFDictionary, device object):
 Build: `./build.sh` (clang, ad-hoc signed; the app's build scripts run it and copy the bundle into
 Contents/Resources). Test in-process before installing: `clang -O1 -o harness harness.c -framework
 CoreAudio -framework CoreFoundation && ./harness LSOutput.driver`. Install/update/remove from the app
-(menu "Virtual Output Device", one administrator prompt, restarts coreaudiod) or by hand:
+(menu "Settings > Exclusive Mode driver", one administrator prompt, restarts coreaudiod) or by hand:
 `sudo ditto LSOutput.driver /Library/Audio/Plug-Ins/HAL/LSOutput.driver && sudo killall coreaudiod`.
 Research history: github.com/dizzysound/music-tap-spike (branch vdevice), vdev/.
