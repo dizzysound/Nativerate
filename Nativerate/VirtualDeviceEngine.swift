@@ -671,6 +671,7 @@ final class VirtualDeviceEngine {
             nonMixable = f.mFormatFlags & kAudioFormatFlagIsNonMixable != 0
             log("DAC format -> \(CA.fmt(f)): \(st)")
             runUserScript(rate, bits: Int(f.mBitsPerChannel))
+            appliedWant = wantBits
         } else if CA.nominal(dac) != rate {
             log("DAC has no listed format at \(rate) Hz; nominal rate -> \(CA.setNominal(dac, rate))")
             runUserScript(rate, bits: nil)
@@ -1744,7 +1745,7 @@ final class VirtualDeviceEngine {
         let change = r != curRate || CA.nominal(dac) != r || formatDiffers(r, want: wantBits)
         log("switch \(switches): \(name) \(change ? "needs \(Int(r)) Hz (DAC \(Int(curRate)))" : "restarts at \(Int(r)) Hz (no rate change)"); \(how); paused; boundary \(reached ? "reached" : "NOT reached") \(ms(t))")
         dropInput.store(1, ordering: .releasing) // the DAC can take seconds; don't let the ring overflow with zeros
-        if change { outFormat.store(0, ordering: .releasing); applyRate(r); appliedWant = wantBits }
+        if change { outFormat.store(0, ordering: .releasing); applyRate(r) }
         recorder?.segmentIn(inFrames.load(ordering: .acquiring), r)
         let td = Date()
         if change {
