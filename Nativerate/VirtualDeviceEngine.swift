@@ -2232,8 +2232,13 @@ final class SoftwareVolume: @unchecked Sendable {
     private let on = Atomic<Int>(0)
     private let gainBits = Atomic<UInt32>(Float(1).bitPattern)
     private let silent = Atomic<Int>(0)
-    var isOn: Bool { on.load(ordering: .relaxed) != 0 }
+    private let fixed = Atomic<Int>(0)
+    /// The setting, and the held DAC has fixed output (no settable volume). A DAC with a volume of its own
+    /// is never scaled, whatever the setting says, so its path stays bit-perfect.
+    var isOn: Bool { on.load(ordering: .relaxed) != 0 && fixed.load(ordering: .relaxed) != 0 }
     func set(_ value: Bool) { on.store(value ? 1 : 0, ordering: .relaxed) }
+    /// VolumeForwarder, at each DAC start: whether the DAC has fixed output.
+    func set(fixedOutput value: Bool) { fixed.store(value ? 1 : 0, ordering: .relaxed) }
     func set(gain: Float, muted: Bool) {
         gainBits.store(gain.bitPattern, ordering: .relaxed)
         silent.store(muted ? 1 : 0, ordering: .relaxed)
@@ -2881,6 +2886,8 @@ final class VolumeForwarder {
             self.ls = ls; self.dac = dac; self.dacUID = CA.string(dac, kAudioDevicePropertyDeviceUID)
             volumeEls = vols; muteEls = mutes; emulatedMute = false
             pinned = vols.isEmpty
+            SoftwareVolume.shared.set(fixedOutput: pinned)
+            RendererOutput.shared.set(fixedOutput: pinned)
             let owner = vols.isEmpty ? dacUID : ""
             if pinnedUID != owner { pinnedLevel = 1; pinnedMuted = false; pinnedUID = owner }
             guard !vols.isEmpty else {
@@ -3281,6 +3288,9 @@ struct MusicSettingsView: View {
 final class RendererOutput: ObservableObject {
     static let shared = RendererOutput()
     @Published private(set) var dacName: String?
+    /// The held DAC has no settable volume (fixed output): the only case Settings > Software volume applies to.
+    /// Kept after the DAC is released, until the next DAC is held; nil before any.
+    @Published private(set) var dacFixedOutput: Bool?
     /// The held DAC's device ID, for Settings > Advanced > DAC info (the default output is then the virtual device).
     @Published private(set) var dacID: AudioObjectID?
     /// The playing track's source, as the engine decided it: its bit depth (nil: not known) and
@@ -3314,6 +3324,11 @@ final class RendererOutput: ObservableObject {
 
     /// Exclusive Mode's software volume while it scales the output (Bit-perfect check); nil at 0 dB.
     @Published private(set) var softwareVolume: String?
+
+    /// Any thread.
+    func set(fixedOutput value: Bool) {
+        DispatchQueue.main.async { if self.dacFixedOutput != value { self.dacFixedOutput = value } }
+    }
 
     /// Any thread.
     func set(softwareVolume text: String?) {
