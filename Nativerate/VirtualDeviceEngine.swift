@@ -157,6 +157,7 @@ final class VirtualDeviceEngine {
     /// pre-roll (Coffee bench: Hey Jack Kerouac's 16-bit upgrade, 15 s before the 24-bit Mountains).
     private var preRollLines: [Date] = []
     private var lossyTrackAt: Date?
+    private var lossyStartAt: Date? // like lossyTrackAt, but the first lossless line does not clear it
     private var pendingUpgrade: (rate: Float64, bits: Int?)?
     private var armAt: Date?
     private var armedAt: Date?
@@ -1108,7 +1109,7 @@ final class VirtualDeviceEngine {
         lastTrackID = pid
         settingsCheckDue = true // after the rate decision below: the loop runs it
         lateArmAt = nil
-        lossyTrackAt = nil
+        lossyTrackAt = nil; lossyStartAt = nil
         awaiting = nil
         // Only a decoder line that came after the previous track began can be this track's (its
         // pre-roll, or its own setup). In trial m1 an Apple Music stream reported Playing before its
@@ -1312,6 +1313,7 @@ final class VirtualDeviceEngine {
         setSource(bits, lossy: !lossless, known: sourceKnown)
         setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
+        lossyStartAt = lossless ? nil : Date()
         let need = neededRate(rate)
         log("new track \(name): decoder \(rate) Hz \(lossless ? "lossless" : "lossy") (seen \(String(format: "%.3f", seenAgo)) s before Playing), DAC \(Int(curRate)) Hz\(need.map { " -> switch to \(Int($0))" } ?? "")")
         if let r = need {
@@ -1332,7 +1334,7 @@ final class VirtualDeviceEngine {
             log("decoder: \(rate) Hz \(bits.map { "\($0)-bit " } ?? "")(\(lossless ? "lossless" : "lossy"))")
         }
         // Apple Music streams can start on a lossy 48k decoder and set up the lossless one seconds later.
-        let ownUpgrade = lossless && ((lossyTrackAt.map { at.timeIntervalSince($0) < 10 } ?? false) || (sourceLossy && rate == trackRate))
+        let ownUpgrade = lossless && ((lossyStartAt.map { at.timeIntervalSince($0) < 10 } ?? false) || (sourceLossy && rate == trackRate))
         if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits); lossyTrackAt = nil }
         decoderRates.append((at, rate, bits, lossless))
         let preRoll = bits != nil && lossless && !ownUpgrade && playing && !inRoutine && awaiting == nil && at > (ownLinesUntil ?? .distantPast)
@@ -1352,7 +1354,7 @@ final class VirtualDeviceEngine {
         // a later lossless line upgrades it as usual (lossyTrackAt).
         if !lossless, !sourceLossy, rate == trackRate, let own = ownLinesUntil, at <= own {
             log("the track's own decoder is lossy (\(Int(rate)) Hz)")
-            lossyTrackAt = at
+            lossyTrackAt = at; lossyStartAt = at
             setSource(nil, lossy: true)
         }
         if let aw = awaiting, !inRoutine {
@@ -1366,7 +1368,7 @@ final class VirtualDeviceEngine {
         guard !inRoutine, playing, awaiting == nil, pendingUpgrade == nil, armAt == nil, latchedAt == nil,
               latchZeros.load(ordering: .acquiring) == 0, marker.load(ordering: .acquiring) < 0,
               at.timeIntervalSince(lastNewTrackAt ?? .distantPast) > 2,
-              neededRate(rate) != nil || (rate == curRate && formatDiffers(curRate, want: want16(preRoll ? bits : nil, lossless: lossless))) else { return }
+              neededRate(rate) != nil || (rate == curRate && !(lossless && bits == nil) && formatDiffers(curRate, want: want16(preRoll ? bits : nil, lossless: lossless))) else { return }
         let left = scripts.remaining() ?? 0
         let delay = left > 13 ? 0 : max(0, left - 1.5)
         armAt = Date().addingTimeInterval(delay)
@@ -1860,7 +1862,7 @@ final class VirtualDeviceEngine {
             // decoder lines belong to the old session (one was taken 264 s later): gate the next
             // play, wait longer than usual for its Playing, and forget the old lines.
             if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("Music quit") }
-            awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil
+            awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil; lossyStartAt = nil
             decoderRates = []; preRollLines = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
             if !gatePending { gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing) }
             gateWaitsForMusic = true
