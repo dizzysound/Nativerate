@@ -1334,7 +1334,7 @@ final class VirtualDeviceEngine {
             log("decoder: \(rate) Hz \(bits.map { "\($0)-bit " } ?? "")(\(lossless ? "lossless" : "lossy"))")
         }
         // Apple Music streams can start on a lossy 48k decoder and set up the lossless one seconds later.
-        let ownUpgrade = lossless && ((lossyStartAt.map { at.timeIntervalSince($0) < 10 } ?? false) || (sourceLossy && rate == trackRate))
+        let ownUpgrade = lossless && (lossyStartAt.map { at.timeIntervalSince($0) < 10 } ?? false) // timed only: a lossless next track at the same rate is a pre-roll
         if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits); lossyTrackAt = nil }
         decoderRates.append((at, rate, bits, lossless))
         let preRoll = bits != nil && lossless && !ownUpgrade && playing && !inRoutine && awaiting == nil && at > (ownLinesUntil ?? .distantPast)
