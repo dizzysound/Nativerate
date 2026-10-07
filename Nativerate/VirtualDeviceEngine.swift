@@ -3264,6 +3264,7 @@ final class RendererOutput: ObservableObject {
         DispatchQueue.main.async { if self.dacFixedOutput != value { self.dacFixedOutput = value } }
     }
 
+    /// Any thread.
     func set(softwareVolume text: String?) {
         DispatchQueue.main.async { if self.softwareVolume != text { self.softwareVolume = text } }
     }

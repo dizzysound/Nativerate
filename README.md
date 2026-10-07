@@ -32,8 +32,9 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
 - **A DAC with no volume control** (many fixed-output DACs and some USB DACs; the keys then change nothing
   and the DAC plays at full level): mute still works, as silence. The first time you lower the volume or
   press mute on such a DAC, Nativerate says so in a notification. To make the keys work, turn on **Settings > Software
-  volume** (off by default; the option appears only while the DAC in use has fixed output, and a DAC
-  with a volume control is never scaled, even if the option was on for a previous DAC): the keys then scale the output, 0 to -64 dB in 4 dB
+  volume** (off by default; the option appears when the last DAC held had fixed output, and a DAC
+  with a volume control is never scaled, even if the option was on for a previous DAC): the keys then
+  scale the output, 0 to -64 dB in 4 dB
   steps. At 0 dB the output is untouched and bit-perfect; below it the samples are scaled (and dithered
   on an integer DAC), so it is not, and Bit-perfect check says so. A 24-bit DAC playing 16-bit tracks has 8
   spare bits, so about -48 dB keeps all of the music's resolution. Or use the DAC's own knob or your amplifier's.
