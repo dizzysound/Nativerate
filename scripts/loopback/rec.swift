@@ -169,7 +169,7 @@ if a.count == 6, let want = UInt32(a[5]) {
     for d in list { print("rec: output physical format seen: \(d)") }
     if ok { print("rec: output format OK: \(Int(rate)) Hz \(want)-bit integer seen while recording") }
     else if !hasIntegerFormat(dev) {
-        print("rec: this device offers no integer output format; Integer Mode cannot apply, format not checked")
+        print("rec: SKIP integer format assert: this device offers no integer output format (float-only)")
         exit(4)
     } else {
         print("rec: FAIL output format was never \(Int(rate)) Hz \(want)-bit integer (Integer Mode on and Exclusive Mode on?)")

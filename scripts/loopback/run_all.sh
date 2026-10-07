@@ -95,7 +95,7 @@ run_case() {
   CASE_FMT=""
   case "$rec_rc" in
     3) echo "FAIL: output stream format was never $rate Hz $bits-bit integer"; CASE_FMT="format FAIL"; rec_rc=0 ;;
-    4) echo "note: device has no integer output format, format not checked"; CASE_FMT="format n/a"; rec_rc=0 ;;
+    4) echo "SKIP: device has no integer output format (float-only), integer assert skipped; sample compare still runs"; CASE_FMT="format SKIP"; rec_rc=0 ;;
   esac
   if [ "$rec_rc" -ne 0 ] || [ ! -s "$rec" ]; then echo "FAIL: recorder exit $rec_rc"; CASE_ERR="FAIL recorder exit $rec_rc"; return; fi
   # Find the loopback pair once: accept a pair only when compare.py explicitly says LOCATED.
