@@ -118,7 +118,9 @@ struct MenuView: View {
                 }
 
                 if defaults.userPreferRendererEngine {
+                    // a DAC with only 24/32-bit or float formats has no 16-bit format to match
                     Toggle("Bit Depth Match", isOn: $defaults.integer16)
+                        .disabled(dither.dacHas16 != true)
                         .help("A lossless 16-bit track plays in the DAC's 16-bit integer format, if the DAC offers one, so a DAC-side bit-perfect test (Naim, RME) sees 16 bits. Other tracks use the DAC's widest format. Takes effect at the next track.")
                 }
 

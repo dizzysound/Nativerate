@@ -750,7 +750,11 @@ final class VirtualDeviceEngine {
         writtenFormat = vf
         outFormat.store(f.packed, ordering: .releasing)
         let bits = f.isFloat ? 32 : f.bits
-        DispatchQueue.main.async { TPDFDither.shared.dacBits = bits }
+        let has16 = CA.availablePhysicalFormats(dacOut).contains {
+            $0.mFormat.mFormatID == kAudioFormatLinearPCM && $0.mFormat.mBitsPerChannel == 16
+                && $0.mFormat.mFormatFlags & kAudioFormatFlagIsNonMixable != 0 && $0.mFormat.mFormatFlags & kAudioFormatFlagIsFloat == 0
+        }
+        DispatchQueue.main.async { TPDFDither.shared.dacBits = bits; TPDFDither.shared.dacHas16 = has16 }
         log("B writes \(f) (virtual format \(CA.fmt(vf)))")
     }
 
@@ -2208,6 +2212,9 @@ final class TPDFDither: ObservableObject, @unchecked Sendable {
     var isOn: Bool { on.load(ordering: .relaxed) != 0 }
     func set(_ value: Bool) { on.store(value ? 1 : 0, ordering: .relaxed) }
     @Published var dacBits: Int?
+    /// The last confirmed DAC offers a 16-bit integer non-mixable format (Bit Depth Match can act);
+    /// nil until a DAC is confirmed. Kept while the DAC is released.
+    @Published var dacHas16: Bool?
 
     /// One TPDF sample in LSBs: the difference of two uniforms in [0, 1), range (-1, 1).
     @inline(__always)
