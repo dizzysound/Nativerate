@@ -47,7 +47,8 @@ values, a 24-bit track within 1.5 steps of a 24-bit one. That is far below audib
 plays what it receives to the DAC unchanged. The Bit-Perfect Check reports such a track as "16 bit (or
 24 bit), but not bit-exact", not as a change in Music's settings. On macOS 27.0.1 (Music 1.7), the
 same measurement found Music's samples equal to the file's, 16 and 24 bit, and Nativerate's output
-equal to them. Both were recorded at the virtual device and compared against the decoded files.
+equal to them. Both were recorded at the virtual device and compared against the decoded files. macOS 27 fixes the samples, but Music still does not switch the
+DAC's rate or take the DAC for itself; Nativerate does both, for Apple Music streams as well as local files.
 
 <p align="center"><img src="docs/menu.png" width="307" alt="The Nativerate menu: 44.1 kHz on an AudioQuest DragonFly Black, with Exclusive Mode checked and Selected Device, Other Apps &amp; Alerts, Bit-Perfect Check, Advanced, About and Quit."></p>
 
