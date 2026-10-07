@@ -151,9 +151,10 @@ final class VirtualDeviceEngine {
     private var lastTrackID: Int64?
     private typealias DecoderLine = (date: Date, rate: Float64, bits: Int?, lossless: Bool)
     private var decoderRates: [DecoderLine] = []
-    /// Lines that came in the last 13 s of the playing track: the next track's pre-roll, so their depth
-    /// is that track's. A line earlier in a track can be its own late setup (Coffee bench: Hey Jack
-    /// Kerouac's 16-bit lossless upgrade, 15 s before the 24-bit Mountains, was taken as its depth).
+    /// Lossless lines with a depth that came while a track played and are not its own setup: the next
+    /// track's pre-roll (local files 8-12 s before the end, streams up to ~265 s), so their depth is that
+    /// track's. A lossless line at the rate of a still-lossy track is its own late upgrade, not a
+    /// pre-roll (Coffee bench: Hey Jack Kerouac's 16-bit upgrade, 15 s before the 24-bit Mountains).
     private var preRollLines: [Date] = []
     private var lossyTrackAt: Date?
     private var pendingUpgrade: (rate: Float64, bits: Int?)?
@@ -1162,8 +1163,9 @@ final class VirtualDeviceEngine {
         decide(line.rate, bits: depthTrusted(line.date, tPlay: at) ? line.bits : nil, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at)
     }
 
-    /// A line's depth is the new track's if it came within 3 s of its Playing, or as a pre-roll near the
-    /// end of the track before. Else Bit Depth Match asks for nothing (widest format).
+    /// A line's depth is the new track's if it came within 3 s of its Playing, or as a pre-roll while the
+    /// track before played. Else Bit Depth Match asks for nothing (widest format). The latch arm in
+    /// handleLine uses the same pre-roll test, so it and decide() agree on the wanted format.
     private func depthTrusted(_ date: Date, tPlay: Date) -> Bool {
         tPlay.timeIntervalSince(date) <= 3 || preRollLines.contains(date)
     }
@@ -1330,11 +1332,12 @@ final class VirtualDeviceEngine {
             log("decoder: \(rate) Hz \(bits.map { "\($0)-bit " } ?? "")(\(lossless ? "lossless" : "lossy"))")
         }
         // Apple Music streams can start on a lossy 48k decoder and set up the lossless one seconds later.
+        let ownUpgrade = lossless && ((lossyTrackAt.map { at.timeIntervalSince($0) < 10 } ?? false) || (sourceLossy && rate == trackRate))
         if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits); lossyTrackAt = nil }
         decoderRates.append((at, rate, bits, lossless))
-        if bits != nil, lossless, playing, !inRoutine, awaiting == nil, at > (ownLinesUntil ?? .distantPast),
-           let left = scripts.remaining(), left <= 13 {
-            preRollLines.removeAll { at.timeIntervalSince($0) > 300 }
+        let preRoll = bits != nil && lossless && !ownUpgrade && playing && !inRoutine && awaiting == nil && at > (ownLinesUntil ?? .distantPast)
+        if preRoll {
+            preRollLines.removeAll { at.timeIntervalSince($0) > 600 }
             preRollLines.append(at)
         }
         if decoderRates.count > 200 { decoderRates.removeFirst(100) }
@@ -1363,7 +1366,7 @@ final class VirtualDeviceEngine {
         guard !inRoutine, playing, awaiting == nil, pendingUpgrade == nil, armAt == nil, latchedAt == nil,
               latchZeros.load(ordering: .acquiring) == 0, marker.load(ordering: .acquiring) < 0,
               at.timeIntervalSince(lastNewTrackAt ?? .distantPast) > 2,
-              neededRate(rate) != nil || (rate == curRate && formatDiffers(curRate, want: want16(bits, lossless: lossless))) else { return }
+              neededRate(rate) != nil || (rate == curRate && formatDiffers(curRate, want: want16(preRoll ? bits : nil, lossless: lossless))) else { return }
         let left = scripts.remaining() ?? 0
         let delay = left > 13 ? 0 : max(0, left - 1.5)
         armAt = Date().addingTimeInterval(delay)
@@ -1858,7 +1861,7 @@ final class VirtualDeviceEngine {
             // play, wait longer than usual for its Playing, and forget the old lines.
             if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("Music quit") }
             awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil
-            decoderRates = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
+            decoderRates = []; preRollLines = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
             if !gatePending { gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing) }
             gateWaitsForMusic = true
             trimIdle.store(1, ordering: .releasing)
