@@ -42,7 +42,7 @@ struct MenuView: View {
     private let overshootHelp = "Lowers Exclusive Mode's output by 3.0 dB so that peaks between samples can't clip. A DAC rebuilds the waveform between the samples, and on loud masters that waveform can rise above 0 dBFS even when no sample does: up to +3.01 dB in theory, +0.8 to +1.5 dB on commercial CDs, often several times a second. Benchmark Media reports that every DAC and sample-rate-converter chip it tested clips these overs in its digital filter, producing bursts of distortion; its own DACs keep 3.5 dB of headroom above 0 dBFS for this. The cost: the output is 3 dB quieter and no longer bit-perfect."
 
     /// Hover text for Software Volume.
-    private let softwareVolumeHelp = "For a DAC with no volume control of its own (the volume keys do nothing on it), the volume keys scale Exclusive Mode's output in software: 0 to -64 dB, 4 dB per key press. At 0 dB nothing is changed and the output stays bit-perfect; below it the samples are scaled (and dithered when the DAC is an integer one), so it isn't. Off by default. A DAC that has a volume control is unaffected: the keys drive it, and the audio stays at unity. Mute outputs silence on any DAC, with this on or off."
+    private let softwareVolumeHelp = "For a DAC with no volume control of its own (the volume keys do nothing on it), the volume keys scale Exclusive Mode's output in software: 0 to -64 dB, 4 dB per key press. At 0 dB nothing is changed and the output stays bit-perfect; below it the samples are scaled (and dithered when the DAC is an integer one), so it isn't. Off by default. This option is shown only while the DAC has no volume control; a DAC that has one is never scaled (the keys drive it, and the audio stays at unity), whatever this is set to. Mute outputs silence on any DAC, with this on or off."
 
     private func checkSymbol(_ ok: Bool?) -> String {
         switch ok {
@@ -193,8 +193,10 @@ struct MenuView: View {
             if defaults.userPreferRendererEngine {
                 Section("Exclusive Mode") {
                     Toggle("Release DAC when Music is idle", isOn: $defaults.rendererReleaseWhenIdle)
-                    Toggle("Software volume", isOn: $defaults.softwareVolume)
-                        .help(softwareVolumeHelp)
+                    if renderer.dacFixedOutput == true {
+                        Toggle("Software volume", isOn: $defaults.softwareVolume)
+                            .help(softwareVolumeHelp)
+                    }
                     Menu {
                         ForEach(SwitchGap.allCases, id: \.self) { m in
                             Toggle("\(m.rawValue) (\(String(format: "%.2f", m.margin)) s)", isOn: Binding(get: { defaults.switchMargin == m }, set: { if $0 { defaults.switchMargin = m } }))
