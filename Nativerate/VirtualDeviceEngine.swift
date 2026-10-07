@@ -181,6 +181,7 @@ final class VirtualDeviceEngine {
     // buffered lossy start for a second or two after the ALAC line), at most until this time
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
+    private var wantBits: Int?    // 16: the track plays in the DAC's 16-bit non-mixable format (Advanced option)
     private var sourceLossy = false // armAt is for a skip (the gap already went through A)
     // false: no decoder line of the track's own or file header said what the source is (coffee,
     // 2026-09-29: 12 iTunes Match AAC uploads logged none, were taken as lossless, and the Bit-Perfect
@@ -421,6 +422,7 @@ final class VirtualDeviceEngine {
                 resetGrid()
                 gridAwaitClean = Date().addingTimeInterval(5)
                 setSource(up.bits, lossy: false)
+                setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
                     log("lossless decoder at \(up.rate) Hz after a lossy start; switching again")
                     switchRate(r, name: "(lossless upgrade)", tPlay: Date())
@@ -695,12 +697,16 @@ final class VirtualDeviceEngine {
         DispatchQueue.main.async { devices.runUserScript(rate, bitDepth: bits) }
     }
 
-    /// Non-mixable first when hogged (exclusive integer output), then the most bits.
+    /// Non-mixable first when hogged (exclusive integer output), then the most bits. With `wantBits`
+    /// set, a non-mixable format of exactly that depth comes first.
     private func dacFormat(_ rate: Float64) -> AudioStreamBasicDescription? {
         let all = CA.availablePhysicalFormats(dacOut).filter {
             $0.mFormat.mFormatID == kAudioFormatLinearPCM && ($0.mFormat.mSampleRate == rate || ($0.mSampleRateRange.mMinimum <= rate && rate <= $0.mSampleRateRange.mMaximum))
         }.map { r -> AudioStreamBasicDescription in var f = r.mFormat; f.mSampleRate = rate; return f }
         let usable = hogged ? all : all.filter { $0.mFormatFlags & kAudioFormatFlagIsNonMixable == 0 }
+        if hogged, let w = wantBits, let f = usable.first(where: {
+            $0.mFormatFlags & kAudioFormatFlagIsNonMixable != 0 && $0.mFormatFlags & kAudioFormatFlagIsFloat == 0 && Int($0.mBitsPerChannel) == w
+        }) { return f }
         return usable.max { a, b in
             let na = a.mFormatFlags & kAudioFormatFlagIsNonMixable != 0, nb = b.mFormatFlags & kAudioFormatFlagIsNonMixable != 0
             if na != nb { return !na }
@@ -1284,6 +1290,7 @@ final class VirtualDeviceEngine {
         trackStartedLossy = false
         trackRate = rate
         setSource(bits, lossy: !lossless, known: sourceKnown)
+        setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
         let need = neededRate(rate)
         log("new track \(name): decoder \(rate) Hz \(lossless ? "lossless" : "lossy") (seen \(String(format: "%.3f", seenAgo)) s before Playing), DAC \(Int(curRate)) Hz\(need.map { " -> switch to \(Int($0))" } ?? "")")
@@ -1647,12 +1654,25 @@ final class VirtualDeviceEngine {
     private func neededRate(_ rate: Float64) -> Float64? {
         guard let device = AudioDevice.lookup(by: dac),
               let fmt = outputDevices.suitableFormat(for: CMPlayerStats(sampleRate: rate, bitDepth: 24, date: Date(), priority: 5), device: device) else { return nil }
-        guard fmt.mSampleRate != curRate else { return nil }
+        guard fmt.mSampleRate != curRate || formatDiffers(curRate) else { return nil }
         guard CA.nominalRates(ls).contains(fmt.mSampleRate) else {
             log("track needs \(Int(fmt.mSampleRate)) Hz, which the virtual device can't run at; staying at \(Int(curRate)) Hz")
             return nil
         }
         return fmt.mSampleRate
+    }
+
+    /// The DAC's physical format isn't the one dacFormat picks at `rate` (the 16-bit option changed it).
+    private func formatDiffers(_ rate: Float64) -> Bool {
+        guard hogged, let f = dacFormat(rate) else { return false }
+        return !CA.same(f, CA.physicalAndVirtual(dacOut).0)
+    }
+
+    /// The 16-bit option: a lossless track Music's log says is 16 bit asks for 16-bit output.
+    private func setWantBits(_ bits: Int?, lossless: Bool) {
+        let w = UserDefaults.standard.bool(forKey: Defaults.kInteger16) && lossless && bits == 16 ? 16 : nil
+        if w != wantBits { log("16-bit output: \(w != nil ? "on for this track" : "off")") }
+        wantBits = w
     }
 
     /// Where B should stop for a skip reported late: the earliest gap A saw in the last 0.6 s that B
@@ -1705,7 +1725,7 @@ final class VirtualDeviceEngine {
         latchZeros.store(0, ordering: .releasing); gate.store(0, ordering: .releasing)
         gatePending = false; gateMarkedAt = nil; armAt = nil; armedAt = nil; latchedAt = nil
         let reached = wait(1) { self.atBoundary.load(ordering: .acquiring) != 0 }
-        let change = r != curRate || CA.nominal(dac) != r
+        let change = r != curRate || CA.nominal(dac) != r || formatDiffers(r)
         log("switch \(switches): \(name) \(change ? "needs \(Int(r)) Hz (DAC \(Int(curRate)))" : "restarts at \(Int(r)) Hz (no rate change)"); \(how); paused; boundary \(reached ? "reached" : "NOT reached") \(ms(t))")
         dropInput.store(1, ordering: .releasing) // the DAC can take seconds; don't let the ring overflow with zeros
         if change { outFormat.store(0, ordering: .releasing); applyRate(r) }

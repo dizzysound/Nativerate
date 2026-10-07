@@ -22,6 +22,7 @@ class Defaults: ObservableObject {
     static let kOvershootProtection = "OvershootProtection"
     static let kTPDFDither = "TPDFDither"
     static let kSoftwareVolume = "SoftwareVolume"
+    static let kInteger16 = "RendererInteger16"
     static let kSwitchMargin = "RendererSwitchMargin"
     
     private init() {
@@ -35,7 +36,8 @@ class Defaults: ObservableObject {
             Self.kRendererReleaseWhenIdle : true,
             Self.kOvershootProtection : false,
             Self.kTPDFDither : false,
-            Self.kSoftwareVolume : false
+            Self.kSoftwareVolume : false,
+            Self.kInteger16 : false
         ])
         
         self.shellScriptPath = UserDefaults.standard.string(forKey: kShellScriptPath)
@@ -51,6 +53,7 @@ class Defaults: ObservableObject {
         self.overshootProtection = UserDefaults.standard.bool(forKey: Self.kOvershootProtection)
         self.tpdfDither = UserDefaults.standard.bool(forKey: Self.kTPDFDither)
         self.softwareVolume = UserDefaults.standard.bool(forKey: Self.kSoftwareVolume)
+        self.integer16 = UserDefaults.standard.bool(forKey: Self.kInteger16)
         OvershootProtection.shared.set(self.overshootProtection)
         TPDFDither.shared.set(self.tpdfDither)
         SoftwareVolume.shared.set(self.softwareVolume)
@@ -77,6 +80,14 @@ class Defaults: ObservableObject {
         willSet {
             UserDefaults.standard.set(newValue, forKey: Self.kSoftwareVolume)
             SoftwareVolume.shared.set(newValue)
+        }
+    }
+
+    /// Exclusive Mode, Advanced: a 16-bit track plays in the DAC's 16-bit non-mixable format when it
+    /// has one (the engine reads the key at each track's switch decision).
+    @Published var integer16: Bool {
+        willSet {
+            UserDefaults.standard.set(newValue, forKey: Self.kInteger16)
         }
     }
 

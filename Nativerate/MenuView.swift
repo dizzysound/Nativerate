@@ -138,6 +138,8 @@ struct MenuView: View {
                         .help(ditherHelp)
                     Toggle("Software Volume When the DAC Has None", isOn: $defaults.softwareVolume)
                         .help(softwareVolumeHelp)
+                    Toggle("16-bit Output for 16-bit Tracks", isOn: $defaults.integer16)
+                        .help("A lossless 16-bit track plays in the DAC's 16-bit integer format, if the DAC offers one, so a DAC-side bit-perfect test (Naim, RME) sees 16 bits. Other tracks use the DAC's widest format. Takes effect at the next track.")
                 } else {
                     Toggle("Bit Depth Switching", isOn: $defaults.userPreferBitDepthDetection)
                     Toggle("Detect Local Files", isOn: $defaults.userPreferLocalFileDetection)
