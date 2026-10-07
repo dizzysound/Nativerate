@@ -21,6 +21,7 @@ class Defaults: ObservableObject {
     static let kRendererReleaseWhenIdle = "RendererReleaseWhenIdle"
     static let kOvershootProtection = "OvershootProtection"
     static let kTPDFDither = "TPDFDither"
+    static let kSoftwareVolume = "SoftwareVolume"
     static let kSwitchMargin = "RendererSwitchMargin"
     
     private init() {
@@ -33,7 +34,8 @@ class Defaults: ObservableObject {
             kUserPreferRendererEngine : false,
             Self.kRendererReleaseWhenIdle : true,
             Self.kOvershootProtection : false,
-            Self.kTPDFDither : false
+            Self.kTPDFDither : false,
+            Self.kSoftwareVolume : false
         ])
         
         self.shellScriptPath = UserDefaults.standard.string(forKey: kShellScriptPath)
@@ -48,8 +50,10 @@ class Defaults: ObservableObject {
         self.rendererReleaseWhenIdle = UserDefaults.standard.bool(forKey: Self.kRendererReleaseWhenIdle)
         self.overshootProtection = UserDefaults.standard.bool(forKey: Self.kOvershootProtection)
         self.tpdfDither = UserDefaults.standard.bool(forKey: Self.kTPDFDither)
+        self.softwareVolume = UserDefaults.standard.bool(forKey: Self.kSoftwareVolume)
         OvershootProtection.shared.set(self.overshootProtection)
         TPDFDither.shared.set(self.tpdfDither)
+        SoftwareVolume.shared.set(self.softwareVolume)
     }
 
     /// Exclusive Mode, Advanced: Inter-sample Overshoot Protection (a fixed -3.0 dB on the output).
@@ -65,6 +69,14 @@ class Defaults: ObservableObject {
         willSet {
             UserDefaults.standard.set(newValue, forKey: Self.kTPDFDither)
             TPDFDither.shared.set(newValue)
+        }
+    }
+
+    /// Exclusive Mode, Advanced: the volume keys scale the output when the DAC has no volume control of its own.
+    @Published var softwareVolume: Bool {
+        willSet {
+            UserDefaults.standard.set(newValue, forKey: Self.kSoftwareVolume)
+            SoftwareVolume.shared.set(newValue)
         }
     }
 
