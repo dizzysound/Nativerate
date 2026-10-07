@@ -6,9 +6,9 @@ loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swif
 ## Requirements
 - A Mac with a Babyface Pro FS and TotalMix FX. Run in Terminal on that Mac, not over SSH
   (macOS gives SSH sessions silence from audio inputs).
-- macOS 25 or earlier for a strict bit-perfect result. On macOS 26 Music scales its output by
-  about 0.99999997 (up to 1 LSB at 24-bit), so no run is exactly bit-perfect there. `run_all.sh`
-  then sets `TOL=1` and labels passes "within tolerance, not bit-perfect".
+- macOS 15 or earlier, or 27 or later, for a strict bit-perfect result. On macOS 26 only, Music
+  scales its output by about 0.99999997 (up to 1 LSB at 24-bit), so no run is exactly bit-perfect
+  there. `run_all.sh` then sets `TOL=1` and labels passes "within tolerance, not bit-perfect".
 - Nativerate running, **Exclusive Mode on**, the Babyface chosen as Music's output.
 
 ## Set up
@@ -34,6 +34,15 @@ Manual steps for one file: `swiftc -O rec.swift -o recorder`; `./recorder "Babyf
 (last argument = expected output bits, optional); play `signals/ref_96000_24.wav` in Music;
 `python3 compare.py signals/ref_96000_24.wav rec/rec_96000_24.wav --channels 1,2`.
 
+## Rate priming and the recorder
+Nativerate switches the DAC rate when playback starts, so `run_all.sh` first starts the file in
+Music, waits until the device reports the case rate (`./recorder DEV RATE --wait-rate`), stops Music,
+and only then starts the recorder, which itself also waits up to 30 s for the rate. If the rate falls
+back after Music stops, the recording may start late and compare reports "starts inside the lead-in".
+The recorder exits 2 on timeout or a file write error. Unverified until the hardware run: whether a
+second process can open the input of a device Nativerate holds in Exclusive Mode (hog). If it cannot,
+the recorder fails at "cannot select device" or records silence, and the marker search fails.
+
 ## What compare.py checks
 - Marker (impulse + 4096 noise samples) found by exact match, then every sample from the start of the
   file to its end: lead-in silence, signal, tail silence. Silence must be exactly zero.
@@ -44,8 +53,10 @@ Exit 0 = PASS, 1 = samples differ, 2 = marker not found / format error.
 ## Controls
 - **Positive control:** a normal 24-bit run at a rate you trust (44.1 kHz) must PASS before you
   believe a FAIL elsewhere.
-- **Negative control:** set the TotalMix output fader to -0.1 dB and run `CONTROL=neg ./run_all.sh 96000`.
-  The case must FAIL; the run is OK only if it does. Put the fader back to 0 dB afterwards.
+- **Negative control:** `CONTROL=neg ./run_all.sh 96000` runs one case twice. It first finds the pair
+  and must PASS at 0 dB, then asks you to set the TotalMix output fader to -0.1 dB and runs it again;
+  compare must exit 1 (samples differ). A marker or format error (exit 2) does not count. It then
+  asks you to put the fader back to 0 dB.
 
 ## Not scripted yet
 Rate switch (play two files at different rates back to back with one recording running) is still a

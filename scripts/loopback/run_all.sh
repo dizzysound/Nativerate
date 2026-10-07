@@ -13,9 +13,10 @@
 #                                     play in Music; afplay bypasses Nativerate and tests nothing
 #                                     of it (harness smoke test only)
 #        TOL=N          accept up to N LSB deviation, reported as "not bit-perfect". Default 0,
-#                       or 1 on macOS 26+ where Music scales output by about 0.99999997.
-#        CONTROL=neg    negative control: set the TotalMix fader to -0.1 dB first. The case must
-#                       FAIL; the run is OK only if it does.
+#                       or 1 on macOS 26 only, where Music scales output by about 0.99999997.
+#        CONTROL=neg    negative control, first rate at 24-bit only: the case must PASS at 0 dB,
+#                       then you set the TotalMix fader to -0.1 dB when asked and the same case
+#                       must exit 1 (samples differ). OK only if both hold.
 #        CH=N           input channel count override (default: read from the recording)
 set -u
 cd "$(dirname "$0")"
@@ -26,10 +27,10 @@ CONTROL="${CONTROL:-}"
 RATES="${*:-44100 48000 88200 96000 176400 192000}"
 MACOS_MAJOR=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
 if [ -z "${TOL:-}" ]; then
-  if [ "${MACOS_MAJOR:-0}" -ge 26 ]; then
+  if [ "${MACOS_MAJOR:-0}" -eq 26 ]; then
     TOL=1
     echo "note: macOS $(sw_vers -productVersion): Music scales its output by ~0.99999997, so this run accepts <= 1 LSB (TOL=1)."
-    echo "      A pass is then 'within tolerance', not bit-perfect. Use macOS 25 or earlier for a strict result."
+    echo "      A pass is then 'within tolerance', not bit-perfect. Use macOS 15 or earlier, or 27 or later, for a strict result."
   else
     TOL=0
   fi
@@ -61,41 +62,75 @@ results=()   # "rate bits result"
 failed=0
 add() { results+=("$1|$2|$3"); }
 
+# run_case rate bits: record + play + locate the pair + compare. Sets CASE_RC to the compare exit
+# code (0 pass, 1 samples differ, 2 marker/format error) or CASE_ERR to a failure label.
+run_case() {
+  local rate=$1 bits=$2 ref rec secs
+  CASE_RC=""; CASE_ERR=""
+  ref="$PWD/signals/ref_${rate}_${bits}.wav"
+  rec="rec/rec_${rate}_${bits}.wav"
+  rm -f "$rec"   # a stale recording must never be compared
+  # 5 s margin on top of the file: recorder start (2 s), Music start (3 s) and slack.
+  secs=$(python3 -c "import wave;w=wave.open('$ref');print(int(w.getnframes()/w.getframerate())+5)")
+  # Prime the DAC rate: Nativerate switches it when playback starts, and the recorder opens the
+  # input at the case rate. Start playback, wait for the rate, stop, then record.
+  if [ "$PLAYER" = music ]; then
+    osascript -e "tell application \"Music\" to play (POSIX file \"$ref\")" >/dev/null
+    ./recorder "$DEV" "$rate" --wait-rate 30; local prime_rc=$?
+    osascript -e 'tell application "Music" to stop' >/dev/null
+    if [ "$prime_rc" -ne 0 ]; then echo "FAIL: DAC did not switch to $rate Hz"; CASE_ERR="FAIL rate switch"; return; fi
+  fi
+  ./recorder "$DEV" "$rate" "$((secs + 5))" "$rec" "$bits" &
+  local rec_pid=$!
+  sleep 2
+  play "$ref" "$secs"; local play_rc=$?
+  wait "$rec_pid"; local rec_rc=$?
+  if [ "$play_rc" -ne 0 ]; then echo "FAIL: playback failed"; CASE_ERR="FAIL playback"; return; fi
+  if [ "$rec_rc" -eq 3 ]; then echo "FAIL: output stream format is not $rate Hz $bits-bit integer"; CASE_ERR="FAIL output format"; return; fi
+  if [ "$rec_rc" -ne 0 ] || [ ! -s "$rec" ]; then echo "FAIL: recorder exit $rec_rc"; CASE_ERR="FAIL recorder exit $rec_rc"; return; fi
+  # Find the loopback pair once: accept a pair only when compare.py explicitly says LOCATED.
+  if [ -z "$pair" ]; then
+    local nch l out
+    nch=${CH:-$(python3 -c "import wavio;print(wavio.header('$rec')[1])")}
+    for l in $(seq 1 2 "$((nch - 1))"); do
+      out=$(python3 compare.py "$ref" "$rec" --channels "$l,$((l + 1))" --probe)
+      case "$out" in LOCATED*) pair="$l,$((l + 1))"; echo "loopback on channels $pair of $nch"; break ;; esac
+    done
+    if [ -z "$pair" ]; then
+      echo "FAIL: marker not found on any of $nch channels (check TotalMix loopback, fader 0 dB, Music volume max)"
+      CASE_ERR="FAIL marker not found"; return
+    fi
+  fi
+  python3 compare.py "$ref" "$rec" --channels "$pair" --tolerance "$TOL"; CASE_RC=$?
+}
+
 for rate in $RATES; do
   for bits in 24 16; do
     [ -n "$CONTROL" ] && { [ "$rate" = "${RATES%% *}" ] && [ "$bits" = 24 ] || continue; }
-    ref="$PWD/signals/ref_${rate}_${bits}.wav"
-    rec="rec/rec_${rate}_${bits}.wav"
     echo "== $rate Hz $bits-bit"
-    rm -f "$rec"   # a stale recording must never be compared
-    secs=$(python3 -c "import wave;w=wave.open('$ref');print(int(w.getnframes()/w.getframerate())+4)")
-    ./recorder "$DEV" "$rate" "$((secs + 2))" "$rec" "$bits" &
-    rec_pid=$!
-    sleep 2
-    play "$ref" "$secs"; play_rc=$?
-    wait "$rec_pid"; rec_rc=$?
-    if [ "$play_rc" -ne 0 ]; then echo "FAIL: playback failed"; add "$rate" "$bits" "FAIL playback"; failed=1; continue; fi
-    if [ "$rec_rc" -eq 3 ]; then echo "FAIL: output stream format is not $rate Hz $bits-bit integer"; add "$rate" "$bits" "FAIL output format"; failed=1; continue; fi
-    if [ "$rec_rc" -ne 0 ] || [ ! -s "$rec" ]; then echo "FAIL: recorder exit $rec_rc"; add "$rate" "$bits" "FAIL recorder exit $rec_rc"; failed=1; continue; fi
-    # Find the loopback pair once: accept a pair only when compare.py explicitly says LOCATED.
-    if [ -z "$pair" ]; then
-      nch=${CH:-$(python3 -c "import wavio;print(wavio.header('$rec')[1])")}
-      for l in $(seq 1 2 "$((nch - 1))"); do
-        out=$(python3 compare.py "$ref" "$rec" --channels "$l,$((l + 1))" --probe)
-        case "$out" in LOCATED*) pair="$l,$((l + 1))"; echo "loopback on channels $pair of $nch"; break ;; esac
-      done
-      if [ -z "$pair" ]; then
-        echo "FAIL: marker not found on any of $nch channels (check TotalMix loopback, fader 0 dB, Music volume max)"
-        if [ -n "$CONTROL" ]; then add "$rate" "$bits" "control: failed as expected"; else add "$rate" "$bits" "FAIL marker not found"; failed=1; fi
-        continue
-      fi
-    fi
-    python3 compare.py "$ref" "$rec" --channels "$pair" --tolerance "$TOL"; rc=$?
     if [ -n "$CONTROL" ]; then
-      if [ "$rc" -ne 0 ]; then add "$rate" "$bits" "control OK: failed as expected"
-      else add "$rate" "$bits" "CONTROL BROKEN: passed with the fader at -0.1 dB"; failed=1; fi
-    elif [ "$rc" -eq 0 ]; then add "$rate" "$bits" "PASS$([ "$TOL" -gt 0 ] && echo " (<= $TOL LSB)")"
-    else add "$rate" "$bits" "FAIL compare exit $rc"; failed=1; fi
+      # Negative control, two steps in one run: first locate the pair and PASS at 0 dB (so the
+      # setup is proven good), then you drop the fader to -0.1 dB and compare must exit 1
+      # (samples differ). Exit 2 (marker or format error) is not a valid control.
+      echo "Step 1: TotalMix fader at 0 dB. The case must PASS."
+      run_case "$rate" "$bits"
+      if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR (step 1, 0 dB)"; failed=1; continue; fi
+      if [ "$CASE_RC" -ne 0 ]; then add "$rate" "$bits" "CONTROL INVALID: no PASS at 0 dB (compare exit $CASE_RC)"; failed=1; continue; fi
+      read -r -p "Step 2: set the TotalMix output fader to -0.1 dB, then press Return: " _
+      run_case "$rate" "$bits"
+      read -r -p "Put the fader back to 0 dB, then press Return: " _
+      if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR (step 2, -0.1 dB)"; failed=1; continue; fi
+      case "$CASE_RC" in
+        1) add "$rate" "$bits" "control OK: PASS at 0 dB, samples differ at -0.1 dB" ;;
+        0) add "$rate" "$bits" "CONTROL BROKEN: passed with the fader at -0.1 dB"; failed=1 ;;
+        *) add "$rate" "$bits" "CONTROL INVALID: compare exit $CASE_RC at -0.1 dB"; failed=1 ;;
+      esac
+      continue
+    fi
+    run_case "$rate" "$bits"
+    if [ -n "$CASE_ERR" ]; then add "$rate" "$bits" "$CASE_ERR"; failed=1
+    elif [ "$CASE_RC" -eq 0 ]; then add "$rate" "$bits" "PASS$([ "$TOL" -gt 0 ] && echo " (<= $TOL LSB)")"
+    else add "$rate" "$bits" "FAIL compare exit $CASE_RC"; failed=1; fi
   done
 done
 
