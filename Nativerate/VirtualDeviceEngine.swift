@@ -643,9 +643,9 @@ final class VirtualDeviceEngine {
             let ready = DeviceFormat.waitUntilReady(d, format: target, checkBitDepth: true, timeout: 12, stalled: { AudioDeviceStop(d, proc); AudioDeviceStart(d, proc) })
             log("DAC \(ready ? "ready" : "NOT ready") after \(ms(t)): \(CA.formats(dacOut))")
         }
+        volume.start(virtual: ls, dac: d) // the gain is published while B is still muted (outFormat 0)
         updateOutFormat()
         listenForFormatChanges()
-        volume.start(virtual: ls, dac: d)
         startOthers()
         setUpAt = Date(); inputSeen = false
         recorder?.segmentOut(outFrames.load(ordering: .acquiring), curRate)
@@ -791,9 +791,9 @@ final class VirtualDeviceEngine {
 
     private func tearDownDAC(keepOthers: Bool = false) {
         if !keepOthers { stopOthers() }
+        outFormat.store(0, ordering: .releasing) // B silent before the volume forwarder lets go
         volume.stop()
         removeFormatListener()
-        outFormat.store(0, ordering: .releasing)
         DispatchQueue.main.async { TPDFDither.shared.dacBits = nil }
         if let p = procB {
             AudioDeviceStop(dac, p)
@@ -2726,8 +2726,8 @@ enum CA {
 /// 8-9.5 dB on the Babyface. A DAC without dB controls gets the slider's value as its scalar.
 /// A DAC with no settable volume: mute outputs silence (SoftwareVolume, B). With Advanced > Software
 /// Volume on, the slider scales B's output by the same mapping (0 dB is unity and untouched); with it
-/// off, the virtual device is held at 0 dB, nothing attenuates, and the first volume key press shows
-/// a notice that says so. Stop leaves the virtual device at 0 dB, unmuted.
+/// off, the virtual device is held at 0 dB, nothing attenuates, and the first volume key press that changes
+/// the volume or the mute shows a notice that says so. Stop leaves the virtual device at 0 dB, unmuted.
 /// A DAC without a mute is muted by setting its volume to the minimum; unmute and stop restore the
 /// level it had. A change made on the DAC itself (Audio MIDI Setup, TotalMix) moves the slider to
 /// match. Comparisons are in slider units, so the DAC's own rounding (0.5 dB on the RME) doesn't echo.
@@ -2754,6 +2754,8 @@ final class VolumeForwarder {
     private var pinned = false // the DAC has no volume: mute is silence; the slider scales B's output only with Software Volume on, else it's held at 0 dB
     private var pinnedLevel: Float32 = 1 // slider, kept across engine restarts while the setting is on
     private var pinnedMuted = false
+    private var pinnedUID = "" // the DAC pinnedLevel and pinnedMuted belong to
+    private var noticePending = false
     // engine thread
     private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
 
@@ -2768,6 +2770,8 @@ final class VolumeForwarder {
             self.ls = ls; self.dac = dac; self.dacUID = CA.string(dac, kAudioDevicePropertyDeviceUID)
             volumeEls = vols; muteEls = mutes; emulatedMute = false
             pinned = vols.isEmpty
+            let owner = vols.isEmpty ? dacUID : ""
+            if pinnedUID != owner { pinnedLevel = 1; pinnedMuted = false; pinnedUID = owner }
             guard !vols.isEmpty else {
                 let soft = SoftwareVolume.shared.isOn
                 let level: Float32 = soft ? pinnedLevel : 1
@@ -2812,7 +2816,7 @@ final class VolumeForwarder {
             }
             // nothing drives it now: leave it reading unity, which is what it passes
             _ = Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1); _ = Self.set(ls, kAudioDevicePropertyMute, 0, 0)
-            applySoftware(level: 1, muted: false)
+            RendererOutput.shared.set(softwareVolume: nil) // B's gain is left as it is: the next start() publishes the new one while B is muted
             pinned = false
         }
     }
@@ -2898,11 +2902,12 @@ final class VolumeForwarder {
         if m != pinnedMuted || level != pinnedLevel {
             log("volume \(String(format: "%.4f", v))\(m ? " muted" : ""): \(soft ? "software, \(Self.softwareText(level) ?? "0 dB")" : "DAC has no volume control")\(m ? ", output silent" : "")")
         }
+        let muteChanged = m != pinnedMuted
         pinnedMuted = m; pinnedLevel = level
         applySoftware(level: level, muted: m)
-        if !soft && v < 1 {
-            log("volume: DAC has no volume control; virtual device back to 0 dB: \(Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1))")
-            if fromKey { noticeOnce() }
+        if !soft {
+            if v < 1 { log("volume: DAC has no volume control; virtual device back to 0 dB: \(Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1))") }
+            if fromKey && (v < 1 || muteChanged) { noticeOnce() }
         }
     }
 
@@ -2922,19 +2927,26 @@ final class VolumeForwarder {
 
     private func noticeOnce() {
         var shown = UserDefaults.standard.stringArray(forKey: Self.noticeKey) ?? []
-        guard !shown.contains(dacUID) else { return }
-        shown.append(dacUID)
-        UserDefaults.standard.set(shown, forKey: Self.noticeKey)
+        guard !shown.contains(dacUID), !noticePending else { return }
+        noticePending = true
+        let uid = dacUID
         let name = CA.string(dac, kAudioObjectPropertyName)
         let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software Volume under Advanced, or use the DAC's knob or your amplifier."
         log("volume: notice: " + text)
         let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert]) { ok, _ in
-            guard ok else { return }
-            let c = UNMutableNotificationContent()
-            c.title = "Nativerate: volume"
-            c.body = text
-            center.add(UNNotificationRequest(identifier: "volume-notice", content: c, trigger: nil))
+        center.requestAuthorization(options: [.alert]) { [weak self] ok, _ in
+            self?.queue.async {
+                self?.noticePending = false
+                guard ok else { return }
+                var shown = UserDefaults.standard.stringArray(forKey: Self.noticeKey) ?? []
+                guard !shown.contains(uid) else { return }
+                shown.append(uid)
+                UserDefaults.standard.set(shown, forKey: Self.noticeKey)
+                let c = UNMutableNotificationContent()
+                c.title = "Nativerate: volume"
+                c.body = text
+                center.add(UNNotificationRequest(identifier: "volume-notice", content: c, trigger: nil))
+            }
         }
     }
 
