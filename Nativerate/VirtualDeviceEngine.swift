@@ -2893,7 +2893,7 @@ final class VolumeForwarder {
     }
 
     /// A DAC with no volume: mute is silence; the level scales B's output if Software Volume is on, else
-    /// the slider goes back to 0 dB (and a key press gets the notice, once per DAC).
+    /// the slider goes back to 0 dB (and a lower or mute key press gets the notice, once per DAC).
     private func pushPinned(fromKey: Bool) {
         let v = Self.get(ls, kAudioDevicePropertyVolumeScalar, 0) ?? 1
         let m = (Self.get(ls, kAudioDevicePropertyMute, 0) ?? 0) != 0
@@ -2926,13 +2926,12 @@ final class VolumeForwarder {
     }
 
     private func noticeOnce() {
-        var shown = UserDefaults.standard.stringArray(forKey: Self.noticeKey) ?? []
+        let shown = UserDefaults.standard.stringArray(forKey: Self.noticeKey) ?? []
         guard !shown.contains(dacUID), !noticePending else { return }
         noticePending = true
         let uid = dacUID
         let name = CA.string(dac, kAudioObjectPropertyName)
         let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software Volume under Advanced, or use the DAC's knob or your amplifier."
-        log("volume: notice: " + text)
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert]) { [weak self] ok, _ in
             self?.queue.async {
@@ -2940,6 +2939,7 @@ final class VolumeForwarder {
                 guard ok else { return }
                 var shown = UserDefaults.standard.stringArray(forKey: Self.noticeKey) ?? []
                 guard !shown.contains(uid) else { return }
+                self?.log("volume: notice: " + text)
                 shown.append(uid)
                 UserDefaults.standard.set(shown, forKey: Self.noticeKey)
                 let c = UNMutableNotificationContent()
