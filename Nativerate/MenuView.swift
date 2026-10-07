@@ -22,6 +22,7 @@ struct MenuView: View {
     @ObservedObject private var dither = TPDFDither.shared
     @ObservedObject private var logExport = LogExport.shared
     @ObservedObject private var otherApps = OtherAppsOutput.shared
+    @ObservedObject private var renderer = RendererOutput.shared
     
     /// Hover text for TPDF Dither: what it does and what it means for the DAC in use (the title
     /// used to carry the DAC's depth, which read as the track's).
@@ -202,7 +203,7 @@ struct MenuView: View {
                 }
 
                 Menu {
-                    let info = DACInfo.lines(for: outputDevices.selectedOutputDevice ?? outputDevices.defaultOutputDevice)
+                    let info = DACInfo.lines(for: renderer.dacID ?? (outputDevices.selectedOutputDevice ?? outputDevices.defaultOutputDevice)?.id)
                     ForEach(info.indices, id: \.self) { Text(info[$0]) }
                 } label: {
                     Text("DAC Info")
@@ -234,14 +235,14 @@ struct MenuView: View {
 /// Advanced > DAC Info: what the selected device offers, read from its output streams' physical
 /// formats when the menu is built.
 enum DACInfo {
-    static func lines(for device: AudioDevice?) -> [String] {
-        guard let device else { return ["No device"] }
-        let d = device.id
-        var lines = [device.name]
+    static func lines(for device: AudioObjectID?) -> [String] {
+        guard let d = device else { return ["No device"] }
+        var lines = [CA.string(d, kAudioObjectPropertyName)]
         let nominal = CA.nominal(d)
         if nominal > 0 { lines.append("Current: \(khz(nominal))") }
 
         let formats = CA.streams(d, kAudioObjectPropertyScopeOutput).flatMap { CA.availablePhysicalFormats($0) }
+            .filter { $0.mFormat.mFormatID == kAudioFormatLinearPCM }
         guard !formats.isEmpty else { return lines + ["No formats reported"] }
 
         // one line per bit depth (integer or float), with the rates that depth plays at
@@ -255,9 +256,10 @@ enum DACInfo {
             if byDepth[key] == nil { order.append(key) }
             // a ranged format (min < max) covers the device's listed rates inside that range
             let lo = r.mSampleRateRange.mMinimum, hi = r.mSampleRateRange.mMaximum
-            byDepth[key, default: []].formUnion([lo, hi].filter { $0 > 0 } + nominalRates.filter { $0 >= lo && $0 <= hi })
+            let own = f.mSampleRate > 0 ? [f.mSampleRate] : []
+            byDepth[key, default: []].formUnion(([lo, hi] + own).filter { $0 > 0 } + nominalRates.filter { $0 >= lo && $0 <= hi })
         }
-        order.sort { (Int($0.prefix { $0.isNumber }) ?? 0, $0) < (Int($1.prefix { $0.isNumber }) ?? 0, $1) }
+        order.sort { (bits($0), $0) < (bits($1), $1) }
         lines.append("Bit depths: " + order.joined(separator: ", "))
         for key in order {
             lines.append("\(key): " + byDepth[key]!.sorted().map(khz).joined(separator: ", "))
@@ -265,6 +267,8 @@ enum DACInfo {
         if !nominalRates.isEmpty { lines.append("Sample rates: " + Set(nominalRates).sorted().map(khz).joined(separator: ", ")) }
         return lines
     }
+
+    private static func bits(_ key: String) -> Int { Int(key.prefix { $0.isNumber }) ?? 0 }
 
     private static func khz(_ hz: Float64) -> String {
         let k = hz / 1000
