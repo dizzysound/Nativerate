@@ -20,7 +20,8 @@
 //  - A play from paused/stopped waits at the ring's "gate" (A marks the first nonzero frame) until
 //    the new track's rate is known, so a wrong-rate start never reaches the DAC.
 //  Same-rate changes, gapless albums and pause/resume pass through untouched.
-//  Volume keys: the virtual device's volume and mute drive the DAC's own controls (VolumeForwarder).
+//  Volume keys: the virtual device's volume and mute drive the DAC's own controls (VolumeForwarder). A DAC
+//  with no volume gets silence for mute, and, if Advanced > Software Volume is on, a gain in B (SoftwareVolume).
 //  Music only (plug-in 1.1.4, 'LSmx' = Music's pid): the plug-in moves every other app's output to the
 //  loopback's channels 3-4, so the DAC gets Music alone; OthersPlayer plays those on the built-in
 //  speakers, and alert sounds move there too (restored on stop and at launch after an unclean exit).
@@ -261,6 +262,7 @@ final class VirtualDeviceEngine {
     private var scriptRate: Float64 = 0 // the rate the user's script (Scripting menu) last heard
     private var overshootLogged: Bool?
     private var ditherLogged: Bool?
+    private var softwareVolumeLogged: Bool?
     private var ticksPerSec = 0.0
 
     // shared with the IO threads
@@ -290,6 +292,7 @@ final class VirtualDeviceEngine {
     private var zeroRun = 0
     private var bPlaying = false
     private var ditherRNG: UInt32 = 0x9E3779B9 // TPDF dither state (xorshift32, never 0)
+    private var softGain: Float = 1 // B: the software volume applied to the previous buffer (0 while muted)
     private let scratch = UnsafeMutablePointer<Float>.allocate(capacity: VirtualDeviceEngine.maxFrames * 2)
     private let scratchA = UnsafeMutablePointer<Float>.allocate(capacity: VirtualDeviceEngine.maxFrames * 2)  // A: Music (ch 1-2)
     private let scratchO = UnsafeMutablePointer<Float>.allocate(capacity: VirtualDeviceEngine.maxFrames * 2)  // A: the others (ch 3-4)
@@ -434,6 +437,12 @@ final class VirtualDeviceEngine {
             if dth != ditherLogged {
                 if ditherLogged != nil || dth { log("TPDF dither \(dth ? "on: integer output under 32 bits is dithered when it can't be written exactly" : "off")") }
                 ditherLogged = dth
+            }
+            let swv = SoftwareVolume.shared.isOn
+            if swv != softwareVolumeLogged {
+                if softwareVolumeLogged != nil || swv { log("software volume \(swv ? "on: a DAC with no volume control follows the volume keys; below 0 dB the output is not bit-perfect" : "off: output unchanged")") }
+                softwareVolumeLogged = swv
+                volume.softwareVolumeChanged()
             }
             if let r = resumeInfo { resumeInfo = nil; resumeFromIdle(r.info, at: r.at) }
             if !steppedAside, !inRoutine, !playing, let since = idleSince, UserDefaults.standard.bool(forKey: Defaults.kRendererReleaseWhenIdle) {
@@ -2078,7 +2087,20 @@ final class VirtualDeviceEngine {
         if muted {
             for b in outs { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
         } else {
-            fmt.write(outs, scratch, n, &ditherRNG)
+            // software volume / mute (a DAC with no volume control): a ramp over the buffer, so a step or a mute doesn't click
+            let target = SoftwareVolume.shared.effectiveGain
+            var scaled = false
+            if target != 1 || softGain != 1 {
+                let from = softGain
+                let step = (target - from) / Float(n)
+                for k in 0..<n {
+                    let g = k == n - 1 ? target : from + step * Float(k + 1)
+                    scratch[k * 2] *= g; scratch[k * 2 + 1] *= g
+                }
+                softGain = target
+                scaled = target > 0 || from > 0
+            }
+            fmt.write(outs, scratch, n, &ditherRNG, scaled: scaled)
         }
         recorder?.output(scratch, n, sample: t.mSampleTime, host: t.mHostTime)
         outFrames.wrappingAdd(n, ordering: .releasing)
@@ -2103,6 +2125,27 @@ final class VirtualDeviceEngine {
 }
 
 // MARK: - Output format for B
+
+/// Advanced > Software Volume When the DAC Has None: for a DAC with no settable volume, B scales its
+/// output by the virtual device's volume (linear in dB, 0 to -64 dB, the slider VolumeForwarder
+/// maps), and mutes by writing silence (the mute works with the setting off too). At 0 dB nothing is
+/// multiplied, so the output stays bit-perfect; below it the samples are scaled and dithered when
+/// they're written to an integer DAC. Off by default. VolumeForwarder sets the gain (it stays 1 on a
+/// DAC with a volume); B reads it.
+final class SoftwareVolume: @unchecked Sendable {
+    static let shared = SoftwareVolume()
+    private let on = Atomic<Int>(0)
+    private let gainBits = Atomic<UInt32>(Float(1).bitPattern)
+    private let silent = Atomic<Int>(0)
+    var isOn: Bool { on.load(ordering: .relaxed) != 0 }
+    func set(_ value: Bool) { on.store(value ? 1 : 0, ordering: .relaxed) }
+    func set(gain: Float, muted: Bool) {
+        gainBits.store(gain.bitPattern, ordering: .relaxed)
+        silent.store(muted ? 1 : 0, ordering: .relaxed)
+    }
+    /// What B multiplies by: 1 is unity, 0 while muted.
+    var effectiveGain: Float { silent.load(ordering: .relaxed) != 0 ? 0 : Float(bitPattern: gainBits.load(ordering: .relaxed)) }
+}
 
 /// How B writes a stereo float frame into the DAC's buffers, packed into one Int for the IO thread.
 /// Advanced > Inter-sample Overshoot Protection: a fixed -3.0 dB (x0.7079) on Exclusive Mode's output
@@ -2178,14 +2221,14 @@ struct OutFormat: CustomStringConvertible {
     var description: String { "\(isFloat ? "float" : "int")\(bits) in \(bytes) bytes\(nonInterleaved ? " non-interleaved" : ""), channels \(left + 1)/\(right + 1)" }
 
     @inline(__always)
-    func write(_ outs: UnsafeMutableAudioBufferListPointer, _ src: UnsafePointer<Float>, _ n: Int, _ rng: inout UInt32) {
+    func write(_ outs: UnsafeMutableAudioBufferListPointer, _ src: UnsafePointer<Float>, _ n: Int, _ rng: inout UInt32, scaled: Bool = false) {
         let scale = isFloat || bits < 2 ? 1 : Double(Int64(1) << (bits - 1))
         let lo = -scale, hi = scale - 1
         let reduce = OvershootProtection.shared.isOn, gain = OvershootProtection.gain
         let shift = alignedHigh ? bytes * 8 - bits : 0
         // dither the whole buffer if any sample lands between the DAC's steps
         var dither = false
-        if !isFloat, bits < 32, TPDFDither.shared.isOn {
+        if !isFloat, bits < 32, TPDFDither.shared.isOn || scaled {
             dither = reduce
             if !dither {
                 for i in 0..<(n * 2) {
@@ -2681,8 +2724,10 @@ enum CA {
 /// Option+Shift step), the same mapping plug-in 1.1.3 reports, so the virtual device reads the DAC's
 /// own level and never above 0 dB; the bottom is the DAC's minimum. The DAC's own taper made one step
 /// 8-9.5 dB on the Babyface. A DAC without dB controls gets the slider's value as its scalar.
-/// A DAC with no settable volume: the virtual device is held at 0 dB, unmuted (nothing attenuates).
-/// Stop leaves it at 0 dB.
+/// A DAC with no settable volume: mute outputs silence (SoftwareVolume, B). With Advanced > Software
+/// Volume on, the slider scales B's output by the same mapping (0 dB is unity and untouched); with it
+/// off, the virtual device is held at 0 dB, nothing attenuates, and the first volume key press shows
+/// a notice that says so. Stop leaves the virtual device at 0 dB, unmuted.
 /// A DAC without a mute is muted by setting its volume to the minimum; unmute and stop restore the
 /// level it had. A change made on the DAC itself (Audio MIDI Setup, TotalMix) moves the slider to
 /// match. Comparisons are in slider units, so the DAC's own rounding (0.5 dB on the RME) doesn't echo.
@@ -2691,6 +2736,7 @@ final class VolumeForwarder {
     /// Set while a DAC without a mute is at its minimum for a mute: [UID, DAC scalar to restore].
     private static let mutedKey = "RendererDACMutedByVolume"
     private static let tolerance: Float32 = 0.01 // slider units (1/16 per key step)
+    private static let noticeKey = "VolumeNoticeDACs" // UIDs of DACs without volume that have had the notice
 
     private let queue = DispatchQueue(label: "RendererEngine.volume")
     private let log: (String) -> Void
@@ -2705,7 +2751,9 @@ final class VolumeForwarder {
     private var rangeDB: Float32 { Self.rangeDB }
     private var useDB = false
     private var dbDirect = false // the DAC has a dB range but no dB -> scalar conversion (DragonFly Black): set its dB
-    private var pinned = false // the DAC has no volume: the virtual device stays at 0 dB, unmuted
+    private var pinned = false // the DAC has no volume: mute is silence; the slider scales B's output only with Software Volume on, else it's held at 0 dB
+    private var pinnedLevel: Float32 = 1 // slider, kept across engine restarts while the setting is on
+    private var pinnedMuted = false
     // engine thread
     private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
 
@@ -2721,10 +2769,14 @@ final class VolumeForwarder {
             volumeEls = vols; muteEls = mutes; emulatedMute = false
             pinned = vols.isEmpty
             guard !vols.isEmpty else {
-                log("volume: DAC has no settable output volume; the volume keys change nothing (audio stays at unity); virtual device held at 0 dB: \(Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1)), unmuted: \(Self.set(ls, kAudioDevicePropertyMute, 0, 0))")
+                let soft = SoftwareVolume.shared.isOn
+                let level: Float32 = soft ? pinnedLevel : 1
+                log("volume: DAC has no settable output volume; \(soft ? "software volume on (the keys scale the output)" : "the volume keys change nothing (audio stays at unity)"); mute outputs silence; slider -> \(String(format: "%.4f", level)): \(Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, level)), mute -> \(pinnedMuted ? 1 : 0): \(Self.set(ls, kAudioDevicePropertyMute, 0, pinnedMuted ? 1 : 0))")
+                applySoftware(level: level, muted: pinnedMuted)
                 active = true
                 return
             }
+            applySoftware(level: 1, muted: false)
             let hasRange = Self.dbRange(dac, vols[0]) != nil
             dbDirect = hasRange && Self.dbToScalar(dac, vols[0], topDB) == nil && Self.settable(dac, kAudioDevicePropertyVolumeDecibels, vols[0])
             useDB = hasRange && (dbDirect || Self.dbToScalar(dac, vols[0], topDB) != nil)
@@ -2760,8 +2812,14 @@ final class VolumeForwarder {
             }
             // nothing drives it now: leave it reading unity, which is what it passes
             _ = Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1); _ = Self.set(ls, kAudioDevicePropertyMute, 0, 0)
+            applySoftware(level: 1, muted: false)
             pinned = false
         }
+    }
+
+    /// Engine thread, when Advanced > Software Volume changes: a DAC with no volume starts or stops scaling.
+    func softwareVolumeChanged() {
+        queue.async { if self.active && self.pinned { self.pushPinned(fromKey: false) } }
     }
 
     /// At launch after an unclean exit: a DAC left at its minimum by an emulated mute gets its level back.
@@ -2800,13 +2858,7 @@ final class VolumeForwarder {
 
     /// Virtual device -> DAC (a volume key, the sound menu).
     private func push() {
-        if pinned {
-            // no DAC control to drive: put the virtual device back to 0 dB, unmuted
-            if (Self.get(ls, kAudioDevicePropertyVolumeScalar, 0) ?? 1) < 1 || (Self.get(ls, kAudioDevicePropertyMute, 0) ?? 0) != 0 {
-                log("volume: DAC has no volume control; virtual device back to 0 dB: \(Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1)), unmuted: \(Self.set(ls, kAudioDevicePropertyMute, 0, 0))")
-            }
-            return
-        }
+        if pinned { pushPinned(fromKey: true); return }
         guard let v = Self.get(ls, kAudioDevicePropertyVolumeScalar, 0) else { return }
         let m = (Self.get(ls, kAudioDevicePropertyMute, 0) ?? 0) != 0
         var did: [String] = []
@@ -2834,6 +2886,56 @@ final class VolumeForwarder {
             }
         }
         if !did.isEmpty { log("volume \(String(format: "%.4f", v))\(m ? " muted" : ""): " + did.joined(separator: ", ")) }
+    }
+
+    /// A DAC with no volume: mute is silence; the level scales B's output if Software Volume is on, else
+    /// the slider goes back to 0 dB (and a key press gets the notice, once per DAC).
+    private func pushPinned(fromKey: Bool) {
+        let v = Self.get(ls, kAudioDevicePropertyVolumeScalar, 0) ?? 1
+        let m = (Self.get(ls, kAudioDevicePropertyMute, 0) ?? 0) != 0
+        let soft = SoftwareVolume.shared.isOn
+        let level: Float32 = soft ? v : 1
+        if m != pinnedMuted || level != pinnedLevel {
+            log("volume \(String(format: "%.4f", v))\(m ? " muted" : ""): \(soft ? "software, \(Self.softwareText(level) ?? "0 dB")" : "DAC has no volume control")\(m ? ", output silent" : "")")
+        }
+        pinnedMuted = m; pinnedLevel = level
+        applySoftware(level: level, muted: m)
+        if !soft && v < 1 {
+            log("volume: DAC has no volume control; virtual device back to 0 dB: \(Self.set(ls, kAudioDevicePropertyVolumeScalar, 0, 1))")
+            if fromKey { noticeOnce() }
+        }
+    }
+
+    /// Hands B the gain for a slider position (1 at the top, so nothing is multiplied) and the Bit-Perfect Check its line.
+    private func applySoftware(level: Float32, muted: Bool) {
+        let unity = level >= 1 - Self.tolerance
+        let gain: Float = unity ? 1 : level <= 0.001 ? 0 : Float(pow(10, Double(topDB - (1 - level) * rangeDB) / 20))
+        SoftwareVolume.shared.set(gain: gain, muted: muted)
+        RendererOutput.shared.set(softwareVolume: unity ? nil : Self.softwareText(level))
+    }
+
+    private static func softwareText(_ level: Float32) -> String? {
+        if level >= 1 - tolerance { return nil }
+        if level <= 0.001 { return "Software volume at its minimum (silent; scales the samples)" }
+        return "Software volume \(Int((topDB - (1 - level) * rangeDB).rounded())) dB (scales the samples)"
+    }
+
+    private func noticeOnce() {
+        var shown = UserDefaults.standard.stringArray(forKey: Self.noticeKey) ?? []
+        guard !shown.contains(dacUID) else { return }
+        shown.append(dacUID)
+        UserDefaults.standard.set(shown, forKey: Self.noticeKey)
+        let name = CA.string(dac, kAudioObjectPropertyName)
+        let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software Volume under Advanced, or use the DAC's knob or your amplifier."
+        log("volume: notice: " + text)
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert]) { ok, _ in
+            guard ok else { return }
+            let c = UNMutableNotificationContent()
+            c.title = "Nativerate: volume"
+            c.body = text
+            center.add(UNNotificationRequest(identifier: "volume-notice", content: c, trigger: nil))
+        }
     }
 
     /// DAC -> virtual device (changed on the DAC itself); not while an emulated mute holds it down.
@@ -3083,6 +3185,14 @@ final class RendererOutput: ObservableObject {
     /// Any thread.
     func set(othersRoute text: String?, ok: Bool) {
         DispatchQueue.main.async { if self.othersRoute?.text != text { self.othersRoute = text.map { ($0, ok) } } }
+    }
+
+    /// Exclusive Mode's software volume while it scales the output (Bit-Perfect Check); nil at 0 dB.
+    @Published private(set) var softwareVolume: String?
+
+    /// Any thread.
+    func set(softwareVolume text: String?) {
+        DispatchQueue.main.async { if self.softwareVolume != text { self.softwareVolume = text } }
     }
 
     /// Any thread.

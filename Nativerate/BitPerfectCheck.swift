@@ -36,6 +36,7 @@ final class BitPerfectCheck: ObservableObject {
     private var othersRouteSink: AnyCancellable?
     private var offGridSink: AnyCancellable?
     private var nearGridSink: AnyCancellable?
+    private var softwareVolumeSink: AnyCancellable?
     private var lastRefresh = Date.distantPast // main thread only
 
     init(outputDevice: @escaping () -> AudioObjectID?) {
@@ -62,6 +63,9 @@ final class BitPerfectCheck: ObservableObject {
         nearGridSink = RendererOutput.shared.$nearGrid.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
             self?.refreshAfterDeviceChange()
         }
+        softwareVolumeSink = RendererOutput.shared.$softwareVolume.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.refreshAfterDeviceChange()
+        }
         refresh()
     }
 
@@ -85,8 +89,10 @@ final class BitPerfectCheck: ObservableObject {
         let others = RendererOutput.shared.othersRoute
         let offGrid = RendererOutput.shared.offGrid
         let nearGrid = RendererOutput.shared.nearGrid
+        let softwareVolume = RendererOutput.shared.softwareVolume
         queue.async { [weak self] in
             var items = Self.check(outputDevice: device)
+            if let softwareVolume { items.append(Item(id: "softwareVolume", ok: false, text: softwareVolume)) }
             if let others { items.append(Item(id: "otherApps", ok: others.ok, text: others.text)) }
             if offGrid { items.append(Item(id: "offGrid", ok: false, text: "Music is changing the samples (they fit no 16- or 24-bit grid): volume, Sound Check or EQ")) }
             if nearGrid != 0 { items.append(Item(id: "nearGrid", ok: false, text: "\(nearGrid) bit, but not bit-exact: macOS rounds Music's samples by a fraction of a \(nearGrid)-bit step (seen on macOS 26; inaudible, not a level change)")) }
