@@ -1434,6 +1434,9 @@ final class VirtualDeviceEngine {
         steppedAside = true
         probeAfterStepAside()
         othersToDACWhileIdle()
+        // video apps keep the Exclusive Mode trail as their audio delay unless told the DAC path's;
+        // the take-back's applyRate reports the trail again
+        setReportedLatency(others.latencyFrames)
     }
 
     /// While stepped aside the DAC is free and Music is idle: other apps play on it (shared, mixable),
@@ -2305,6 +2308,7 @@ final class OthersPlayer {
     deinit { stop(); scratch.deallocate() }
 
     var isRunning: Bool { engine?.isRunning ?? false }
+    var latencyFrames: Int { engine == nil ? 0 : target }
     var status: String {
         guard engine != nil else { return "other apps: no player" }
         return "other apps: fill \(ring.fill) (target \(target)), varispeed \(String(format: "%.6f", lastRate)), dry \(rs.restarts.load(ordering: .relaxed))x, over \(ring.overruns.load(ordering: .relaxed))"
