@@ -23,8 +23,10 @@ struct NativerateApp: App {
                 .environmentObject(defaults)
         } label: {
             if defaults.userPreferIconStatusBarItem {
-                Image(systemName: "music.note")
+                // the filled speaker says Exclusive Mode holds the output
+                Image(systemName: defaults.userPreferRendererEngine ? "hifispeaker.fill" : "hifispeaker")
                     .padding(.horizontal, 8)
+                    .accessibilityLabel(defaults.userPreferRendererEngine ? "Nativerate, Exclusive Mode on" : "Nativerate")
             }
             else {
                 SampleRateLabel()

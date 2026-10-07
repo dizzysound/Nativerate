@@ -2931,7 +2931,7 @@ final class VolumeForwarder {
         noticePending = true
         let uid = dacUID
         let name = CA.string(dac, kAudioObjectPropertyName)
-        let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software Volume under Advanced, or use the DAC's knob or your amplifier."
+        let text = "\(name.isEmpty ? "This DAC" : name) has no volume control. Turn on Software volume under Settings, or use the DAC's knob or your amplifier."
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert]) { [weak self] ok, _ in
             self?.queue.async {

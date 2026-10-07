@@ -6,7 +6,7 @@ tested.
 ## Reporting a bug
 
 Open an issue with the **Bug report** template. Include your DAC, macOS version, and the output of
-**Bit-Perfect Check**, and attach the zip from **About > Export Logs…**. Without the logs, most
+**Bit-perfect check**, and attach the zip from **About Nativerate > Export logs…**. Without the logs, most
 playback problems can't be told apart.
 
 ## Reporting hardware
