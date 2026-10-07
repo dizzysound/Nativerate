@@ -151,6 +151,10 @@ final class VirtualDeviceEngine {
     private var lastTrackID: Int64?
     private typealias DecoderLine = (date: Date, rate: Float64, bits: Int?, lossless: Bool)
     private var decoderRates: [DecoderLine] = []
+    /// Lines that came in the last 13 s of the playing track: the next track's pre-roll, so their depth
+    /// is that track's. A line earlier in a track can be its own late setup (Coffee bench: Hey Jack
+    /// Kerouac's 16-bit lossless upgrade, 15 s before the 24-bit Mountains, was taken as its depth).
+    private var preRollLines: [Date] = []
     private var lossyTrackAt: Date?
     private var pendingUpgrade: (rate: Float64, bits: Int?)?
     private var armAt: Date?
@@ -1126,7 +1130,7 @@ final class VirtualDeviceEngine {
             let own = decoderRates.last(where: { (prev == nil || $0.date > prev!) && (prevOwnUntil == nil || $0.date > prevOwnUntil!) && $0.rate == r })
             if let n = newest, n.rate != r { log("new track \(name): the newest decoder line says \(Int(n.rate)) Hz, Music says \(Int(r)) Hz for the track; Music's decides") }
             let libLossy = own == nil && libraryLossy(name: name)
-            decide(r, bits: own?.bits, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
+            decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
                    sourceKnown: own != nil || libLossy)
             return
@@ -1155,7 +1159,13 @@ final class VirtualDeviceEngine {
             log("new track \(name): the newest decoder line (\(Int(line.rate)) Hz, \(String(format: "%.3f", at.timeIntervalSince(line.date))) s before Playing) may be the previous track's; waiting 1 s for its own")
             return
         }
-        decide(line.rate, bits: line.bits, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at)
+        decide(line.rate, bits: depthTrusted(line.date, tPlay: at) ? line.bits : nil, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at)
+    }
+
+    /// A line's depth is the new track's if it came within 3 s of its Playing, or as a pre-roll near the
+    /// end of the track before. Else Bit Depth Match asks for nothing (widest format).
+    private func depthTrusted(_ date: Date, tPlay: Date) -> Bool {
+        tPlay.timeIntervalSince(date) <= 3 || preRollLines.contains(date)
     }
 
     /// Music's sample rate for the current track, if the current track is `name` (up to ~1 s of retries:
@@ -1298,9 +1308,7 @@ final class VirtualDeviceEngine {
         trackStartedLossy = false
         trackRate = rate
         setSource(bits, lossy: !lossless, known: sourceKnown)
-        // A line seen long before Playing can be the previous track's (Coffee bench: "16-bit" 15 s
-        // before a 24-bit track). Ask for 16 bit only on a line close to the start; else widest.
-        setWantBits(seenAgo <= 3 ? bits : nil, lossless: lossless)
+        setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
         let need = neededRate(rate)
         log("new track \(name): decoder \(rate) Hz \(lossless ? "lossless" : "lossy") (seen \(String(format: "%.3f", seenAgo)) s before Playing), DAC \(Int(curRate)) Hz\(need.map { " -> switch to \(Int($0))" } ?? "")")
@@ -1324,6 +1332,11 @@ final class VirtualDeviceEngine {
         // Apple Music streams can start on a lossy 48k decoder and set up the lossless one seconds later.
         if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits); lossyTrackAt = nil }
         decoderRates.append((at, rate, bits, lossless))
+        if bits != nil, lossless, playing, !inRoutine, awaiting == nil, at > (ownLinesUntil ?? .distantPast),
+           let left = scripts.remaining(), left <= 13 {
+            preRollLines.removeAll { at.timeIntervalSince($0) > 300 }
+            preRollLines.append(at)
+        }
         if decoderRates.count > 200 { decoderRates.removeFirst(100) }
         // ALAC logs a 'qlac' line without the depth, then 'alac ... from N-bit source': a line in the
         // track's own window at its rate fills in the depth the menu shows
@@ -1367,7 +1380,8 @@ final class VirtualDeviceEngine {
             awaiting = nil
             if let f = aw.fallback {
                 log("no newer decoder line for \(aw.name) within 1 s; the earlier one decides")
-                decide(f.rate, bits: f.bits, lossless: f.lossless, seenAgo: aw.tPlay.timeIntervalSince(f.date), name: aw.name, tPlay: aw.tPlay)
+                // the fallback line is from the previous track's window: its depth may be that track's
+                decide(f.rate, bits: nil, lossless: f.lossless, seenAgo: aw.tPlay.timeIntervalSince(f.date), name: aw.name, tPlay: aw.tPlay)
             } else {
                 log("no decoder line for \(aw.name) within 3 s; playing at \(Int(curRate)) Hz")
                 let ll = libraryLossy(name: aw.name)
