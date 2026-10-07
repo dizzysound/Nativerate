@@ -24,9 +24,9 @@ for rate in $RATES; do
     sox -q --buffer 262144 -t coreaudio "$DEV" -c "$CH" -b 24 -r "$rate" "$rec" trim 0 "$((secs + 2))" &
     sox_pid=$!
     sleep 2
-    osascript -e "tell application \"Music\" to play (add POSIX file \"$ref\")" >/dev/null
+    # afplay: plays the file unchanged to the default output (no Music Sound Check/EQ/volume).
+    afplay "$ref"
     wait "$sox_pid"
-    osascript -e 'tell application "Music" to stop' >/dev/null
     # Find the loopback channel pair once (the first pair where the marker is found).
     if [ -z "$pair" ]; then
       for l in $(seq 1 2 "$CH"); do
