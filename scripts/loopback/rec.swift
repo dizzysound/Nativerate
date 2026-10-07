@@ -1,7 +1,7 @@
 // Records all inputs of a CoreAudio device to a 24-bit WAV, without dropped or repeated blocks.
 // (sox's coreaudio input repeats 4096-frame blocks and drops others at high rates.)
-// Build: swiftc -O rec.swift -o rec
-// Usage: ./rec "<device name substring>" <rate> <seconds> <out.wav>
+// Build: swiftc -O rec.swift -o recorder
+// Usage: ./recorder "<device name substring>" <rate> <seconds> <out.wav>
 import AVFoundation
 import CoreAudio
 
