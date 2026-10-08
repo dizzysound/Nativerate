@@ -71,6 +71,18 @@ play() { # file duration_seconds
   esac
 }
 
+# Music handles "stop" late (about 2.4 s after the prime play, GIL-559), so the recording must not
+# start until its state really is stopped: a prime that is still playing ends up in the recording.
+stop_music() {
+  osascript -e 'tell application "Music" to stop' >/dev/null
+  local i
+  for i in $(seq 1 100); do
+    [ "$(osascript -e 'tell application "Music" to player state as string')" = stopped ] && { sleep 1; return 0; }
+    sleep 0.2
+  done
+  return 1
+}
+
 pair=""
 results=()   # "rate bits result"
 failed=0
@@ -91,8 +103,9 @@ run_case() {
   if [ "$PLAYER" = music ]; then
     osascript -e "tell application \"Music\" to play (POSIX file \"$ref\")" >/dev/null
     ./recorder "$DEV" "$rate" --wait-rate 30; local prime_rc=$?
-    osascript -e 'tell application "Music" to stop' >/dev/null
+    stop_music; local stop_rc=$?
     if [ "$prime_rc" -ne 0 ]; then echo "FAIL: DAC did not switch to $rate Hz"; CASE_ERR="FAIL rate switch"; return; fi
+    if [ "$stop_rc" -ne 0 ]; then echo "FAIL: Music did not stop after the prime play"; CASE_ERR="FAIL prime stop"; return; fi
   fi
   if [ -n "$FORMAT_ONLY" ]; then
     ./recorder --format-only "$FMT_DEV" "$rate" "$((secs + 5))" "$bits" &
