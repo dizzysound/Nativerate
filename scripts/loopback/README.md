@@ -3,6 +3,12 @@
 Plays test files through Music and Nativerate into an RME Babyface Pro FS, records the digital
 loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swiftc`; no sox, no numpy.
 
+## Result (Oct 2026)
+Pastor Mac, Babyface Pro FS, optical out cabled to optical in (S/PDIF mode), Nativerate in
+Exclusive Mode: **all 12 cases PASS, 0 differing samples** (44.1 to 192 kHz, 16-bit and 24-bit).
+TotalMix loopback alone was not used for the final run; the optical cable is the stronger test,
+because the signal leaves the Babyface as real digital audio.
+
 ## Requirements
 - A Mac with a Babyface Pro FS and TotalMix FX. Run in Terminal on that Mac, not over SSH
   (macOS gives SSH sessions silence from audio inputs).
@@ -36,6 +42,14 @@ It exits non-zero if any case failed. `PLAYER=manual` has you press play in Musi
 Manual steps for one file: `swiftc -O rec.swift -o recorder`; `./recorder "Babyface Pro" 96000 20 rec/rec_96000_24.wav 24`
 (last argument = expected output bits, optional); play `signals/ref_96000_24.wav` in Music;
 `python3 compare.py signals/ref_96000_24.wav rec/rec_96000_24.wav --channels 1,2`.
+
+## Optical self-loop on the Babyface (setup used for the result)
+1. Cable the Babyface optical out to its optical in.
+2. TotalMix Settings: optical out and in = **SPDIF** (ADAT cannot carry 176.4/192 kHz), clock **Internal**.
+3. Loopback **off** on every output.
+4. Select the SPDIF output. Software playback AN 1/2 send **0.0**; every hardware input **-oo**,
+   the optical input too (else it feeds back). SPDIF output fader **0.0**, EQ off.
+5. Run `./run_all.sh`. The marker search finds the optical pair (inputs 5/6) by itself.
 
 ## Testing a second DAC
 Two environment variables: `DEV` is the **input** that is recorded (the Babyface), `OUT_DEV` is the
@@ -71,9 +85,12 @@ and only then starts the recorder. Music acts on the stop a couple of seconds la
 the player state is `stopped`, waits 1 s more, and fails the case with `FAIL prime stop` if Music never stops.
 The recorder itself also waits up to 30 s for the rate. If the rate falls
 back after Music stops, the recording may start late and compare reports "starts inside the lead-in".
-The recorder exits 2 on timeout or a file write error. Unverified until the hardware run: whether a
-second process can open the input of a device Nativerate holds in Exclusive Mode (hog). If it cannot,
-the recorder fails at "cannot select device" or records silence, and the marker search fails.
+The recorder exits 2 on timeout or a file write error. The hardware run confirmed that the recorder
+can open the Babyface input while Nativerate holds the device in Exclusive Mode.
+
+Pitfalls seen on the hardware run: sox records only the first 2 inputs and drops blocks at 96 kHz
+(hence `rec.swift`); `afplay` and SSH sessions do not test the real path (SSH gets silent inputs);
+a constant gain error (for example -64 dB) means a TotalMix fader or send is not at 0.0.
 
 ## What compare.py checks
 - Marker (impulse + 4096 noise samples) found by exact match, then every sample from the start of the
@@ -91,5 +108,5 @@ Exit 0 = PASS, 1 = samples differ, 2 = marker not found / format error.
   asks you to put the fader back to 0 dB.
 
 ## Not scripted yet
-Rate switch (play two files at different rates back to back with one recording running) is still a
-manual check; see the PR for the follow-up.
+Rate switch (play two files at different rates back to back with one recording running) has not
+been run yet, scripted or by hand.
