@@ -1,7 +1,12 @@
-# Bit-perfect loopback test (GIL-391)
+# Bit-perfect loopback test
 
 Plays test files through Music and Nativerate into an RME Babyface Pro FS, records the digital
 loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swiftc`; no sox, no numpy.
+
+## Result
+**Bit-perfect: all 12 cases pass with 0 differing samples** (44.1, 48, 88.2, 96, 176.4 and 192 kHz,
+16 and 24 bit). Babyface Pro FS with its optical output cabled to its optical input, Nativerate in
+Exclusive Mode. The audio leaves the interface as real S/PDIF and comes back unchanged.
 
 ## Requirements
 - A Mac with a Babyface Pro FS and TotalMix FX. Run in Terminal on that Mac, not over SSH
@@ -15,7 +20,7 @@ loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swif
 
 ## Set up
 1. TotalMix: on the output pair Music plays to (for example AN 1/2), click **Loopback** in the
-   channel settings. Its signal goes to the matching input pair.
+   channel settings (for an optical self-loop, see below: Loopback stays off). Its signal goes to the matching input pair.
 2. TotalMix: output fader for that pair at 0 dB. No EQ, no dynamics (compressor/expander/autolevel),
    no room FX, no trim on the loopback input.
 3. Music: volume at maximum, Sound Check off, Sound Enhancer off, EQ off, crossfade off.
@@ -37,6 +42,14 @@ Manual steps for one file: `swiftc -O rec.swift -o recorder`; `./recorder "Babyf
 (last argument = expected output bits, optional); play `signals/ref_96000_24.wav` in Music;
 `python3 compare.py signals/ref_96000_24.wav rec/rec_96000_24.wav --channels 1,2`.
 
+## Optical self-loop on the Babyface (setup used for the result)
+1. Cable the Babyface optical out to its optical in.
+2. TotalMix Settings: optical out and in = **SPDIF** (ADAT cannot carry 176.4/192 kHz), clock **Internal**.
+3. Loopback **off** on every output.
+4. Select the SPDIF output. Software playback AN 1/2 send **0.0**; every hardware input **-oo**,
+   the optical input too (else it feeds back). SPDIF output fader **0.0**, EQ off.
+5. Run `./run_all.sh`. The marker search finds the optical pair (inputs 5/6) by itself.
+
 ## Testing a second DAC
 Two environment variables: `DEV` is the **input** that is recorded (the Babyface), `OUT_DEV` is the
 **output** DAC whose rate and format are checked and which Music plays to. Pick the case that matches
@@ -49,8 +62,8 @@ the DAC.
 3. Run `OUT_DEV="<DAC name>" DEV="Babyface Pro" ./run_all.sh`. The recorder records the Babyface
    inputs (the optical pair among them), the format check reads the DAC's output stream, and the same
    marker search and sample compare run. No TotalMix loopback is needed; the pair is found by the marker.
-4. Limits: optical (S/PDIF) carries up to 96 kHz in two channels, so run only rates up to 96000
-   (`./run_all.sh 44100 48000 96000`) and 24-bit or 16-bit. If the DAC's volume is not fixed or its
+4. Limits: many optical (S/PDIF) ports stop at 96 kHz (the Babyface does 192 kHz). If yours does,
+   run only rates up to 96000 (`./run_all.sh 44100 48000 96000`) and 24-bit or 16-bit. If the DAC's volume is not fixed or its
    digital out is processed, expect sample differences that are not Nativerate's.
 
 **(b) Analog-only DAC (no digital out, no cable)**
@@ -71,9 +84,10 @@ and only then starts the recorder. Music acts on the stop a couple of seconds la
 the player state is `stopped`, waits 1 s more, and fails the case with `FAIL prime stop` if Music never stops.
 The recorder itself also waits up to 30 s for the rate. If the rate falls
 back after Music stops, the recording may start late and compare reports "starts inside the lead-in".
-The recorder exits 2 on timeout or a file write error. Unverified until the hardware run: whether a
-second process can open the input of a device Nativerate holds in Exclusive Mode (hog). If it cannot,
-the recorder fails at "cannot select device" or records silence, and the marker search fails.
+The recorder exits 2 on timeout or a file write error. The hardware run confirmed that the recorder
+can open the Babyface input while Nativerate holds the device in Exclusive Mode.
+
+Tip: a constant level error (for example -64 dB) means a TotalMix fader or send is not at 0.0.
 
 ## What compare.py checks
 - Marker (impulse + 4096 noise samples) found by exact match, then every sample from the start of the
@@ -91,5 +105,5 @@ Exit 0 = PASS, 1 = samples differ, 2 = marker not found / format error.
   asks you to put the fader back to 0 dB.
 
 ## Not scripted yet
-Rate switch (play two files at different rates back to back with one recording running) is still a
-manual check; see the PR for the follow-up.
+Rate switch (play two files at different rates back to back with one recording running) has not
+been run yet, scripted or by hand.
