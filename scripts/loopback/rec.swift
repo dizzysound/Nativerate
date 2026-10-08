@@ -199,6 +199,9 @@ if a.count == 6, let want = UInt32(a[5]) { startSampling(outDev, rate: rate, wan
 try engine.start()
 let timedOut = done.wait(timeout: .now() + secs + 10) == .timedOut
 engine.stop()
+input.removeTap(onBus: 0)
+// exit() skips deinit, so close the file here or its WAV header keeps a data size of 0.
+if #available(macOS 15.0, *) { file.close() }
 if let e = writeError {
     FileHandle.standardError.write("rec: file write failed: \(e)\n".data(using: .utf8)!); exit(2)
 }
