@@ -124,6 +124,19 @@ The Xcode build runs `HALPlugin/build.sh` to build the plug-in into the app's Re
 - About 70-80 ms of latency at 44.1 kHz.
 - Music's AutoMix blends tracks, so a clean switch isn't possible; turn it off.
 
+## Troubleshooting
+
+- **All audio stops** (on every app and device): quit Nativerate, then restart the macOS audio
+  server before you reboot:
+
+  ```sh
+  sudo killall coreaudiod
+  ```
+
+  macOS starts it again in a few seconds. Reboot only if that does not help.
+- **Reporting a problem:** use **About > Export Logs…**. The zip lists every device, every
+  stream, and all physical formats each stream supports.
+
 ## License and credits
 
 Nativerate is licensed under GPL-3.0 (see `LICENSE`), as is the project it came from. The original
