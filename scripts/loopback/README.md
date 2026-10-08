@@ -1,13 +1,12 @@
-# Bit-perfect loopback test (GIL-391)
+# Bit-perfect loopback test
 
 Plays test files through Music and Nativerate into an RME Babyface Pro FS, records the digital
 loopback with `rec.swift`, and compares every sample. Stdlib Python 3 plus `swiftc`; no sox, no numpy.
 
-## Result (Oct 2026)
-Pastor Mac, Babyface Pro FS, optical out cabled to optical in (S/PDIF mode), Nativerate in
-Exclusive Mode: **all 12 cases PASS, 0 differing samples** (44.1 to 192 kHz, 16-bit and 24-bit).
-TotalMix loopback alone was not used for the final run; the optical cable is the stronger test,
-because the signal leaves the Babyface as real digital audio.
+## Result
+**Bit-perfect: all 12 cases pass with 0 differing samples** (44.1, 48, 88.2, 96, 176.4 and 192 kHz,
+16 and 24 bit). Babyface Pro FS with its optical output cabled to its optical input, Nativerate in
+Exclusive Mode. The audio leaves the interface as real S/PDIF and comes back unchanged.
 
 ## Requirements
 - A Mac with a Babyface Pro FS and TotalMix FX. Run in Terminal on that Mac, not over SSH
@@ -88,9 +87,7 @@ back after Music stops, the recording may start late and compare reports "starts
 The recorder exits 2 on timeout or a file write error. The hardware run confirmed that the recorder
 can open the Babyface input while Nativerate holds the device in Exclusive Mode.
 
-Pitfalls seen on the hardware run: sox records only the first 2 inputs and drops blocks at 96 kHz
-(hence `rec.swift`); `afplay` and SSH sessions do not test the real path (SSH gets silent inputs);
-a constant gain error (for example -64 dB) means a TotalMix fader or send is not at 0.0.
+Tip: a constant level error (for example -64 dB) means a TotalMix fader or send is not at 0.0.
 
 ## What compare.py checks
 - Marker (impulse + 4096 noise samples) found by exact match, then every sample from the start of the
