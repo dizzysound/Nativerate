@@ -20,7 +20,7 @@ Exclusive Mode. The audio leaves the interface as real S/PDIF and comes back unc
 
 ## Set up
 1. TotalMix: on the output pair Music plays to (for example AN 1/2), click **Loopback** in the
-   channel settings. Its signal goes to the matching input pair.
+   channel settings (for an optical self-loop, see below: Loopback stays off). Its signal goes to the matching input pair.
 2. TotalMix: output fader for that pair at 0 dB. No EQ, no dynamics (compressor/expander/autolevel),
    no room FX, no trim on the loopback input.
 3. Music: volume at maximum, Sound Check off, Sound Enhancer off, EQ off, crossfade off.
@@ -62,8 +62,8 @@ the DAC.
 3. Run `OUT_DEV="<DAC name>" DEV="Babyface Pro" ./run_all.sh`. The recorder records the Babyface
    inputs (the optical pair among them), the format check reads the DAC's output stream, and the same
    marker search and sample compare run. No TotalMix loopback is needed; the pair is found by the marker.
-4. Limits: optical (S/PDIF) carries up to 96 kHz in two channels, so run only rates up to 96000
-   (`./run_all.sh 44100 48000 96000`) and 24-bit or 16-bit. If the DAC's volume is not fixed or its
+4. Limits: many optical (S/PDIF) ports stop at 96 kHz (the Babyface does 192 kHz). If yours does,
+   run only rates up to 96000 (`./run_all.sh 44100 48000 96000`) and 24-bit or 16-bit. If the DAC's volume is not fixed or its
    digital out is processed, expect sample differences that are not Nativerate's.
 
 **(b) Analog-only DAC (no digital out, no cable)**

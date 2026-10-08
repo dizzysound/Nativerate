@@ -53,7 +53,7 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
 
 The **Bit-perfect check** menu item reports whether your current path is bit-perfect and, if not, why.
 
-**Proven bit-perfect at the DAC.** We cabled an RME Babyface Pro FS's optical output back into its
+**Proven bit-perfect at the digital output.** On macOS 27, we cabled an RME Babyface Pro FS's optical output back into its
 optical input and played test files through Music and Nativerate in Exclusive Mode. Every sample
 came back identical: **0 differences in all 12 cases**, 44.1 to 192 kHz, 16 and 24 bit. Run it
 yourself with [`scripts/loopback`](scripts/loopback/README.md).
