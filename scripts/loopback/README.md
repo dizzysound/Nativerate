@@ -67,7 +67,9 @@ the DAC was put in the integer format at the right rate and depth. It cannot be 
 ## Rate priming and the recorder
 Nativerate switches the DAC rate when playback starts, so `run_all.sh` first starts the file in
 Music, waits until the device reports the case rate (`./recorder DEV RATE --wait-rate`), stops Music,
-and only then starts the recorder, which itself also waits up to 30 s for the rate. If the rate falls
+and only then starts the recorder. Music acts on the stop a couple of seconds late, so the script polls until
+the player state is `stopped`, waits 1 s more, and fails the case with `FAIL prime stop` if Music never stops.
+The recorder itself also waits up to 30 s for the rate. If the rate falls
 back after Music stops, the recording may start late and compare reports "starts inside the lead-in".
 The recorder exits 2 on timeout or a file write error. Unverified until the hardware run: whether a
 second process can open the input of a device Nativerate holds in Exclusive Mode (hog). If it cannot,
