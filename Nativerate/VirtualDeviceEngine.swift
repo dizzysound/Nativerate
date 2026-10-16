@@ -203,6 +203,10 @@ final class VirtualDeviceEngine {
     // (streams and skips, ~0.4 s late) or the decoder a switch's rewind re-creates.
     private var ownLinesUntil: Date?
     private var trackRate: Float64? // the decoder rate decided for the playing track
+    // trackRate came from Music alone for a streamed track, with no decoder line of its own yet. Music's
+    // rate for a stream is its catalog AAC's, not the lossless stream's (GitHub #41: 44.1 for 48 and
+    // 96 kHz ALAC), so the track's own lossless line at another rate overrides it.
+    private var musicRateUnverified = false
     // a new track whose decoder line hasn't come yet; fallback: the line to use if none comes
     private var awaiting: (name: String, tPlay: Date, until: Date, fallback: DecoderLine?)?
     private var gateMarkedAt: Date?
@@ -431,7 +435,7 @@ final class VirtualDeviceEngine {
                 setSource(up.bits, lossy: false)
                 setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
-                    log("lossless decoder at \(up.rate) Hz after a lossy start; switching again")
+                    log("lossless decoder at \(up.rate) Hz after a lossy start or Music's rate for a stream; switching again")
                     switchRate(r, name: "(lossless upgrade)", tPlay: Date())
                 }
             }
@@ -1114,6 +1118,7 @@ final class VirtualDeviceEngine {
         settingsCheckDue = true // after the rate decision below: the loop runs it
         lateArmAt = nil
         lossyTrackAt = nil; lossyStartAt = nil
+        pendingUpgrade = nil
         awaiting = nil
         // Only a decoder line that came after the previous track began can be this track's (its
         // pre-roll, or its own setup). In trial m1 an Apple Music stream reported Playing before its
@@ -1123,6 +1128,7 @@ final class VirtualDeviceEngine {
         lastNewTrackAt = at
         ownLinesUntil = max(at.addingTimeInterval(2), prevOwnUntil ?? .distantPast)
         trackRate = nil
+        musicRateUnverified = false
         // Music's own rate for the track decides when it gives one: on skips forward and back Music logs
         // decoder lines for the track it leaves, the one it goes to and its pre-roll, and the newest
         // line was another track's (pastor Mac, 2026-09-29: As Alive As You Need Me To Be, 48k, played
@@ -1135,7 +1141,9 @@ final class VirtualDeviceEngine {
             // (coffee: Little Martha took the line of the track before, 203 s old, as its own 24 bit)
             let own = decoderRates.last(where: { (prev == nil || $0.date > prev!) && (prevOwnUntil == nil || $0.date > prevOwnUntil!) && $0.rate == r })
             if let n = newest, n.rate != r { log("new track \(name): the newest decoder line says \(Int(n.rate)) Hz, Music says \(Int(r)) Hz for the track; Music's decides") }
-            let libLossy = own == nil && libraryLossy(name: name)
+            let lib = own == nil ? librarySource(name: name) : (lossy: false, streamed: false)
+            let libLossy = lib.lossy
+            musicRateUnverified = lib.streamed
             decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
                    sourceKnown: own != nil || libLossy)
@@ -1223,12 +1231,16 @@ final class VirtualDeviceEngine {
     /// No decoder line of its own: Music's library can still say the track is lossy, when it's an AAC or
     /// MP3 file on disk or an iCloud upload (pastor, 2026-09-30: 5 of 8 "? bit" tracks were uploaded AAC).
     /// Matched and Apple Music tracks stream lossless or AAC, so they stay unknown.
-    private func libraryLossy(name: String) -> Bool {
-        guard let s = scripts.trackSource(), name.isEmpty || s.name == name else { return false }
+    private func libraryLossy(name: String) -> Bool { librarySource(name: name).lossy }
+
+    /// `streamed`: an Apple Music subscription track with no file on disk. Music's sample rate for it is
+    /// the catalog AAC's, whatever the stream plays.
+    private func librarySource(name: String) -> (lossy: Bool, streamed: Bool) {
+        guard let s = scripts.trackSource(), name.isEmpty || s.name == name else { return (false, false) }
         let lossyKind = s.kind.contains("AAC") || s.kind == "MPEG audio file"
         let lossy = lossyKind && (s.localFile || s.cloud == "uploaded")
         log("library: \(s.kind), \(s.cloud.isEmpty ? "no cloud status" : s.cloud), \(s.localFile ? "file on disk" : "no file on disk")\(lossy ? ": lossy" : "")")
-        return lossy
+        return (lossy, !s.localFile && s.cloud == "subscription")
     }
 
     /// Every 0.5 s: counts the window if Music played steadily through it (Music ramps the level at a
@@ -1361,6 +1373,19 @@ final class VirtualDeviceEngine {
             lossyTrackAt = at; lossyStartAt = at
             setSource(nil, lossy: true)
         }
+        // A stream's own line, in its window after Playing: it confirms Music's rate, or replaces it when the
+        // lossless stream runs at another one. The upgrade switches again, as for a lossy start. Not gated on
+        // `playing`: our own pause in the track-start switch puts it false, and the upgrade waits for the play.
+        // The flag stays set after an upgrade; the line the switch's rewind creates, at the new rate, clears it.
+        if musicRateUnverified, awaiting == nil, let own = ownLinesUntil, at <= own, at > (lastNewTrackAt ?? .distantPast) {
+            if rate == trackRate {
+                musicRateUnverified = false
+                if let up = pendingUpgrade, up.rate != rate { pendingUpgrade = nil }
+            } else if lossless {
+                if pendingUpgrade?.rate != rate { log("the stream's own decoder is lossless at \(Int(rate)) Hz; Music said \(trackRate.map { "\(Int($0))" } ?? "?") Hz for the track") }
+                pendingUpgrade = (rate, bits ?? (pendingUpgrade?.rate == rate ? pendingUpgrade?.bits : nil))
+            }
+        }
         if let aw = awaiting, !inRoutine {
             awaiting = nil
             decide(rate, bits: bits, lossless: lossless, seenAgo: -at.timeIntervalSince(aw.tPlay), name: aw.name, tPlay: aw.tPlay)
@@ -1466,7 +1491,7 @@ final class VirtualDeviceEngine {
     /// go into the virtual device, where A drops them, and the take-back rewinds.
     private func stepAside(after: TimeInterval) {
         if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("stepping aside") }
-        lateArmAt = nil; awaiting = nil; pendingUpgrade = nil
+        lateArmAt = nil; awaiting = nil; pendingUpgrade = nil; musicRateUnverified = false
         log("Music idle \(Int(after)) s: stepping aside (DAC released; the default output stays on the virtual device)")
         dropInput.store(1, ordering: .releasing) // nothing reads the ring until the take-back
         tearDownDAC(keepOthers: true)
@@ -1895,7 +1920,7 @@ final class VirtualDeviceEngine {
             // decoder lines belong to the old session (one was taken 264 s later): gate the next
             // play, wait longer than usual for its Playing, and forget the old lines.
             if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("Music quit") }
-            awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil; lossyStartAt = nil
+            awaiting = nil; pendingUpgrade = nil; musicRateUnverified = false; lossyTrackAt = nil; lossyStartAt = nil
             decoderRates = []; preRollLines = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
             if !gatePending { gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing) }
             gateWaitsForMusic = true
