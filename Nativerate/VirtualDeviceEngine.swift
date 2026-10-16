@@ -429,7 +429,6 @@ final class VirtualDeviceEngine {
             if formatDirty.load(ordering: .acquiring) != 0 || now.timeIntervalSince(lastFormatCheck) >= 1 { lastFormatCheck = now; checkFormat() }
             if let up = pendingUpgrade, playing, !inRoutine {
                 pendingUpgrade = nil
-                musicRateUnverified = false
                 trackRate = up.rate
                 resetGrid()
                 gridAwaitClean = Date().addingTimeInterval(5)
@@ -1119,6 +1118,7 @@ final class VirtualDeviceEngine {
         settingsCheckDue = true // after the rate decision below: the loop runs it
         lateArmAt = nil
         lossyTrackAt = nil; lossyStartAt = nil
+        pendingUpgrade = nil
         awaiting = nil
         // Only a decoder line that came after the previous track began can be this track's (its
         // pre-roll, or its own setup). In trial m1 an Apple Music stream reported Playing before its
@@ -1143,7 +1143,7 @@ final class VirtualDeviceEngine {
             if let n = newest, n.rate != r { log("new track \(name): the newest decoder line says \(Int(n.rate)) Hz, Music says \(Int(r)) Hz for the track; Music's decides") }
             let lib = own == nil ? librarySource(name: name) : (lossy: false, streamed: false)
             let libLossy = lib.lossy
-            musicRateUnverified = lib.streamed && !lib.lossy
+            musicRateUnverified = lib.streamed
             decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
                    sourceKnown: own != nil || libLossy)
@@ -1374,13 +1374,16 @@ final class VirtualDeviceEngine {
             setSource(nil, lossy: true)
         }
         // A stream's own line, in its window after Playing: it confirms Music's rate, or replaces it when the
-        // lossless stream runs at another one. The upgrade switches again, as for a lossy start.
-        if musicRateUnverified, awaiting == nil, playing, let own = ownLinesUntil, at <= own, at > (lastNewTrackAt ?? .distantPast) {
+        // lossless stream runs at another one. The upgrade switches again, as for a lossy start. Not gated on
+        // `playing`: our own pause in the track-start switch puts it false, and the upgrade waits for the play.
+        // The flag stays set after an upgrade; the line the switch's rewind creates, at the new rate, clears it.
+        if musicRateUnverified, awaiting == nil, let own = ownLinesUntil, at <= own, at > (lastNewTrackAt ?? .distantPast) {
             if rate == trackRate {
                 musicRateUnverified = false
+                if let up = pendingUpgrade, up.rate != rate { pendingUpgrade = nil }
             } else if lossless {
                 if pendingUpgrade?.rate != rate { log("the stream's own decoder is lossless at \(Int(rate)) Hz; Music said \(trackRate.map { "\(Int($0))" } ?? "?") Hz for the track") }
-                pendingUpgrade = (rate, bits)
+                pendingUpgrade = (rate, bits ?? (pendingUpgrade?.rate == rate ? pendingUpgrade?.bits : nil))
             }
         }
         if let aw = awaiting, !inRoutine {
@@ -1488,7 +1491,7 @@ final class VirtualDeviceEngine {
     /// go into the virtual device, where A drops them, and the take-back rewinds.
     private func stepAside(after: TimeInterval) {
         if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("stepping aside") }
-        lateArmAt = nil; awaiting = nil; pendingUpgrade = nil
+        lateArmAt = nil; awaiting = nil; pendingUpgrade = nil; musicRateUnverified = false
         log("Music idle \(Int(after)) s: stepping aside (DAC released; the default output stays on the virtual device)")
         dropInput.store(1, ordering: .releasing) // nothing reads the ring until the take-back
         tearDownDAC(keepOthers: true)
@@ -1917,7 +1920,7 @@ final class VirtualDeviceEngine {
             // decoder lines belong to the old session (one was taken 264 s later): gate the next
             // play, wait longer than usual for its Playing, and forget the old lines.
             if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("Music quit") }
-            awaiting = nil; pendingUpgrade = nil; lossyTrackAt = nil; lossyStartAt = nil
+            awaiting = nil; pendingUpgrade = nil; musicRateUnverified = false; lossyTrackAt = nil; lossyStartAt = nil
             decoderRates = []; preRollLines = []; lastNewTrackAt = nil; ownLinesUntil = nil; trackRate = nil
             if !gatePending { gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing) }
             gateWaitsForMusic = true
