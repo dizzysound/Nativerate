@@ -1148,14 +1148,10 @@ final class VirtualDeviceEngine {
             // lossy track needs an AAC one): the newest line, at this rate and lossless, is this track's
             // too (pastor, 2026-10-16: "Five Stop Mother Superior Rain" after an ALAC 16-bit 44.1k stream).
             let reused = own == nil && !libLossy ? decoderRates.last.flatMap { $0.rate == r && $0.lossless ? $0 : nil } : nil
+            if let re = reused { log("new track \(name): no decoder line of its own; the decoder in use is lossless at \(Int(r)) Hz\(re.bits.map { ", \($0) bit" } ?? ""), so Music reused it") }
             decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
-                   sourceKnown: own != nil || libLossy || reused != nil)
-            if let re = reused {
-                log("new track \(name): no decoder line of its own; the decoder in use is lossless at \(Int(r)) Hz\(re.bits.map { ", \($0) bit" } ?? ""), so Music reused it")
-                // the menu's depth only: the DAC's format stays on the widest, as for any track with no line
-                setSource(re.bits, lossy: false)
-            }
+                   sourceKnown: own != nil || libLossy || reused != nil, menuBits: reused?.bits)
             return
         }
         guard let line = decoderRates.last(where: { prev == nil || $0.date > prev! }) else {
@@ -1331,11 +1327,12 @@ final class VirtualDeviceEngine {
         return alone
     }
 
-    private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true) {
+    /// `menuBits`: a depth for the menu only (a reused decoder's); the DAC's format stays on `bits`.
+    private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil) {
         resetGrid()
         trackStartedLossy = false
         trackRate = rate
-        setSource(bits, lossy: !lossless, known: sourceKnown)
+        setSource(bits ?? menuBits, lossy: !lossless, known: sourceKnown)
         setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
         lossyStartAt = lossless ? nil : Date()
