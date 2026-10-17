@@ -187,6 +187,7 @@ final class VirtualDeviceEngine {
     // buffered lossy start for a second or two after the ALAC line), at most until this time
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
+    private var depthFromLine = false // the track's depth came from a decoder line of its own: later lines in its window are the next track's
     private var wantBits: Int?    // 16/24/32: the track plays in the DAC's non-mixable integer format of that depth (Integer Mode)
     private var appliedWant: Int? // wantBits when the DAC's format was last set (nil: the option's format isn't on the DAC)
     private var sourceLossy = false // armAt is for a skip (the gap already went through A)
@@ -432,6 +433,7 @@ final class VirtualDeviceEngine {
                 trackRate = up.rate
                 resetGrid()
                 gridAwaitClean = Date().addingTimeInterval(5)
+                depthFromLine = up.bits != nil
                 setSource(up.bits, lossy: false)
                 setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
@@ -1151,7 +1153,7 @@ final class VirtualDeviceEngine {
             if let re = reused { log("new track \(name): no decoder line of its own; the decoder in use is lossless at \(Int(r)) Hz\(re.bits.map { ", \($0) bit" } ?? ""), so Music reused it") }
             decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
-                   sourceKnown: own != nil || libLossy || reused != nil, menuBits: reused?.bits)
+                   sourceKnown: own != nil || libLossy || reused != nil, menuBits: reused?.bits, lineAt: own?.date)
             return
         }
         guard let line = decoderRates.last(where: { prev == nil || $0.date > prev! }) else {
@@ -1178,7 +1180,7 @@ final class VirtualDeviceEngine {
             log("new track \(name): the newest decoder line (\(Int(line.rate)) Hz, \(String(format: "%.3f", at.timeIntervalSince(line.date))) s before Playing) may be the previous track's; waiting 1 s for its own")
             return
         }
-        decide(line.rate, bits: depthTrusted(line.date, tPlay: at) ? line.bits : nil, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at)
+        decide(line.rate, bits: depthTrusted(line.date, tPlay: at) ? line.bits : nil, lossless: line.lossless, seenAgo: at.timeIntervalSince(line.date), name: name, tPlay: at, lineAt: line.date)
     }
 
     /// A line's depth is the new track's if it came within 3 s of its Playing, or as a pre-roll while the
@@ -1328,10 +1330,12 @@ final class VirtualDeviceEngine {
     }
 
     /// `menuBits`: a depth for the menu only (a reused decoder's); the DAC's format stays on `bits`.
-    private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil) {
+    private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil, lineAt: Date? = nil) {
         resetGrid()
         trackStartedLossy = false
         trackRate = rate
+        // a pre-roll line (the track before was playing) may be another track's: its own line can still correct it
+        depthFromLine = bits != nil && !(lineAt.map { preRollLines.contains($0) } ?? false)
         setSource(bits ?? menuBits, lossy: !lossless, known: sourceKnown)
         setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
@@ -1367,8 +1371,15 @@ final class VirtualDeviceEngine {
         if decoderRates.count > 200 { decoderRates.removeFirst(100) }
         // ALAC logs a 'qlac' line without the depth, then 'alac ... from N-bit source': a line in the
         // track's own window at its rate fills in the depth the menu shows
+        // Music logs the next track's decoder within ~1 s of a skip (pastor, 2026-10-17: Old Brown Shoe, 16 bit,
+        // then a 24-bit line 1.1 s later for the track after it), so only the first depth in the window counts.
         if let b = bits, lossless, rate == trackRate, let own = ownLinesUntil, at <= own {
-            setSource(b, lossy: false)
+            if depthFromLine {
+                if b != logBits { log("decoder line at \(b) bit in the track's window ignored: its depth came from an earlier line (probably the next track's)") }
+            } else {
+                depthFromLine = true
+                setSource(b, lossy: false)
+            }
         }
         // The track's own decoder can come just after the decision, which took it as lossless for want
         // of a line (pastor: "Uniform", lossy line 18 ms later; its samples fit no grid and the
