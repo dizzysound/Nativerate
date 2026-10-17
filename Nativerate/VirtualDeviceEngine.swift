@@ -187,6 +187,7 @@ final class VirtualDeviceEngine {
     // buffered lossy start for a second or two after the ALAC line), at most until this time
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
+    private var depthFromLine = false // the track's depth came from a decoder line of its own: later lines in its window are the next track's
     private var wantBits: Int?    // 16/24/32: the track plays in the DAC's non-mixable integer format of that depth (Integer Mode)
     private var appliedWant: Int? // wantBits when the DAC's format was last set (nil: the option's format isn't on the DAC)
     private var sourceLossy = false // armAt is for a skip (the gap already went through A)
@@ -1332,6 +1333,7 @@ final class VirtualDeviceEngine {
         resetGrid()
         trackStartedLossy = false
         trackRate = rate
+        depthFromLine = bits != nil
         setSource(bits ?? menuBits, lossy: !lossless, known: sourceKnown)
         setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
@@ -1367,8 +1369,15 @@ final class VirtualDeviceEngine {
         if decoderRates.count > 200 { decoderRates.removeFirst(100) }
         // ALAC logs a 'qlac' line without the depth, then 'alac ... from N-bit source': a line in the
         // track's own window at its rate fills in the depth the menu shows
+        // Music logs the next track's decoder within ~1 s of a skip (pastor, 2026-10-17: Old Brown Shoe, 16 bit,
+        // then a 24-bit line 1.1 s later for the track after it), so only the first depth in the window counts.
         if let b = bits, lossless, rate == trackRate, let own = ownLinesUntil, at <= own {
-            setSource(b, lossy: false)
+            if depthFromLine {
+                if b != logBits { log("decoder line at \(b) bit in the track's window ignored: its depth came from an earlier line (this one is the next track's)") }
+            } else {
+                depthFromLine = true
+                setSource(b, lossy: false)
+            }
         }
         // The track's own decoder can come just after the decision, which took it as lossless for want
         // of a line (pastor: "Uniform", lossy line 18 ms later; its samples fit no grid and the
