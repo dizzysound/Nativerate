@@ -1243,9 +1243,9 @@ final class VirtualDeviceEngine {
     private func libraryLossy(name: String) -> Bool { librarySource(name: name).lossy }
 
     /// `streamed`: a track with no file on disk that is not an iCloud upload: an Apple Music subscription
-    /// track, or one whose library info Music has not filled in yet (pastor, 2026-10-18: kind "", cloud
-    /// status missing value 50 ms after Playing, a 48k stream). Music's sample rate for it is the catalog
-    /// AAC's, or the previous track's, whatever the stream plays.
+    /// track, or a stream whose library info Music leaves empty (pastor, 2026-10-18: kind "", cloud status
+    /// missing value for the whole stream, a 48k one). Music's sample rate for it is the catalog AAC's, or
+    /// the previous track's, whatever the stream plays.
     private func librarySource(name: String) -> (lossy: Bool, streamed: Bool) {
         guard let s = scripts.trackSource(), name.isEmpty || s.name == name else { return (false, false) }
         let lossyKind = s.kind.contains("AAC") || s.kind == "MPEG audio file"
