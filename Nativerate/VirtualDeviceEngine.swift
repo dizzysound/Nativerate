@@ -1494,9 +1494,17 @@ final class VirtualDeviceEngine {
         }
         if gatePending, m >= 0 {
             if gateMarkedAt == nil { gateMarkedAt = Date(); log("gate: output started at ring \(m); waiting for the track's rate") }
-            // another app's sound, or Music never reported Playing
-            let limit = gateWaitsForMusic ? 4.0 : 1.5
-            if !playing, let g = gateMarkedAt, Date().timeIntervalSince(g) > limit { releaseGate("no Playing within \(limit) s"); regateOnSilence = true }
+            if let g = gateMarkedAt {
+                let held = Date().timeIntervalSince(g)
+                if !playing {
+                    // another app's sound, or Music never reported Playing (or paused again since)
+                    if held > (gateWaitsForMusic ? 4.0 : 1.5) { releaseGate("Music not playing"); regateOnSilence = true }
+                } else if awaiting == nil, held > 5 {
+                    // Music says Playing, but no track decision is under way (its notices were dropped, or
+                    // its decoder line never came): the 3 s waits end in a release, so this is a stuck gate
+                    releaseGate("Music playing, no rate decision within 5 s")
+                }
+            }
         }
     }
 
