@@ -420,6 +420,10 @@ final class VirtualDeviceEngine {
             log("new run: dropping the idle state the last run left (stepped aside \(steppedAside), take-back pending \(resumeInfo != nil), retry holdoff \(resumeRetryAt != nil))")
         }
         steppedAside = false; resumeInfo = nil; resumeRetryAt = nil; idleSince = nil
+        // Also from the last run: stepAside() left dropInput at 1 (A would write nothing to the ring, and a
+        // same-rate first track never goes through switchRate, which clears it); lastTrackID would make the
+        // first Playing of the track already playing a "resume" that skips the rate decision.
+        dropInput.store(0, ordering: .releasing); lastTrackID = nil; trackRate = nil
         guard setUp() else {
             log("setup failed; engine idle until it is turned off")
             while !shouldStop { Thread.sleep(forTimeInterval: 0.1) }
