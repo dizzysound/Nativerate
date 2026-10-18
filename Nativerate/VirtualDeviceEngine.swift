@@ -122,6 +122,20 @@ final class VirtualDeviceEngine {
         return outs.first { CA.transport($0) == kAudioDeviceTransportTypeBuiltIn } ?? outs.first
     }
 
+    /// Where tearDown puts the default output back: the one the user had, else the DAC, else the
+    /// device the system would pick. Each only while the HAL still lists it with an output: a USB DAC
+    /// that dropped out (or came back under a new id) leaves a stale id that setDefaultOutput accepts
+    /// and coreaudiod then ignores. Nil when no output is left.
+    static func restoreTarget(before: AudioObjectID, dac: AudioObjectID, dacUID: String, ls: AudioObjectID,
+                              listed: [AudioObjectID], hasOutput: (AudioObjectID) -> Bool,
+                              uid: (AudioObjectID) -> String, fallback: () -> AudioObjectID?) -> AudioObjectID? {
+        func usable(_ d: AudioObjectID) -> Bool { d != 0 && d != ls && listed.contains(d) && hasOutput(d) }
+        if usable(before) { return before }
+        if usable(dac) { return dac }
+        if !dacUID.isEmpty, let again = listed.first(where: { usable($0) && uid($0) == dacUID }) { return again }
+        return fallback()
+    }
+
     private unowned let outputDevices: OutputDevices
 
     // main thread
@@ -854,8 +868,13 @@ final class VirtualDeviceEngine {
         setReportedLatency(0)
         if ls != 0 { log("virtual device scalar reset: \(CA.setScalar(ls, 1.0, Self.kRateScalar))") }
         // the default the user had (with a Selected Device the DAC can be another device)
-        let back = defaultBefore != 0 && defaultBefore != ls && CA.hasOutput(defaultBefore) ? defaultBefore : dac
-        if restoreDefault, back != 0, back != ls, CA.defaultOutput() == ls {
+        // the DAC may have dropped out (USB hiccup, unplug): then another output, never a stale id
+        func target() -> AudioObjectID? {
+            Self.restoreTarget(before: defaultBefore, dac: dac, dacUID: dacUID, ls: ls, listed: CA.devices(), hasOutput: CA.hasOutput,
+                               uid: { CA.string($0, kAudioDevicePropertyDeviceUID) }, fallback: { Self.fallbackOutput(excluding: self.ls) })
+        }
+        if restoreDefault, CA.defaultOutput() == ls, var back = target() {
+            if defaultBefore != 0, back != defaultBefore { log("the output the user had isn't available; \(CA.string(back, kAudioObjectPropertyName)) instead") }
             log("default output restored to \(CA.string(back, kAudioObjectPropertyName)): \(CA.setDefaultOutput(back))")
             // coreaudiod re-evaluates its preferred default after the hog release and format change,
             // with the virtual device still first in its list (the update is asynchronous): in trial
@@ -866,10 +885,13 @@ final class VirtualDeviceEngine {
                 Thread.sleep(forTimeInterval: 0.05)
                 if CA.defaultOutput() == ls {
                     resets += 1
+                    if let now = target() { back = now } // the target can drop out (or come back under a new id) during the hold
                     log("coreaudiod put the virtual device back as the default; restoring again: \(CA.setDefaultOutput(back))")
                 }
             }
             log("default output after 3 s: \(CA.string(CA.defaultOutput(), kAudioObjectPropertyName))\(resets > 0 ? " (\(resets) re-restores)" : "")")
+        } else if restoreDefault, CA.defaultOutput() == ls {
+            log("default output: no output device is left to give it back to; it stays on the virtual device until the app is detached")
         }
         if restoreDefault {
             if let note = Self.restoreAlerts() { log(note) }
