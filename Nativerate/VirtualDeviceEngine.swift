@@ -152,7 +152,7 @@ final class VirtualDeviceEngine {
     private var logProcessStart = Date()
     private var lastStreamLineAt: Date?    // when the stream last delivered a line
     private var feedNotes: [String] = []   // what the stream's supervisor wants in the engine log
-    private var feedQuickDeaths = 0        // the stream ended within 5 s, in a row: past 5 it is left until the next step-aside or take-back
+    private var feedQuickDeaths = 0        // the stream ended within 5 s, in a row: past 5 it is left until the next step-aside or a take-back without a decoder line of its own
 
     // engine thread
     private var ls = AudioObjectID(0)
@@ -352,7 +352,7 @@ final class VirtualDeviceEngine {
     func start() {
         guard thread == nil else { return }
         print("[Exclusive Mode] virtual-device engine: start requested")
-        inboxLock.lock(); stopRequested = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; inboxLock.unlock()
+        inboxLock.lock(); stopRequested = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
         observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             self.inboxLock.lock(); self.infoInbox.append((Date(), note.userInfo ?? [:])); self.inboxLock.unlock()
@@ -420,8 +420,8 @@ final class VirtualDeviceEngine {
             let lived = Date().timeIntervalSince(self.logProcessStart)
             if current { self.feedQuickDeaths = lived < 5 ? self.feedQuickDeaths + 1 : 0 }
             let giveUp = self.feedQuickDeaths > 5
-            if current, self.feedQuickDeaths <= 5 {
-                self.feedNotes.append(giveUp ? "decoder log stream keeps ending at once (status \(proc.terminationStatus)); not starting it again until the next step-aside or take-back" : "decoder log stream ended (status \(proc.terminationStatus), after \(Int(lived)) s); starting it again")
+            if current {
+                self.feedNotes.append(giveUp ? "decoder log stream keeps ending at once (status \(proc.terminationStatus)); not starting it again until the next step-aside or a take-back without a decoder line of its own" : "decoder log stream ended (status \(proc.terminationStatus), after \(Int(lived)) s); starting it again")
             }
             self.inboxLock.unlock()
             guard current, !giveUp else { return }
@@ -437,20 +437,16 @@ final class VirtualDeviceEngine {
         inboxLock.lock()
         if stopRequested { inboxLock.unlock(); return }
         let old = logProcess
+        var swapped = false
         do {
             try p.run()
-            logProcess = p; logProcessStart = Date()
+            logProcess = p; logProcessStart = Date(); swapped = true
         } catch {
             logProcess = old
             feedNotes.append("could not start the decoder log stream: \(error)")
         }
         inboxLock.unlock()
-        if logProcessIs(p) { old?.terminationHandler = nil; if old?.isRunning == true { old?.terminate() } }
-    }
-
-    private func logProcessIs(_ p: Process) -> Bool {
-        inboxLock.lock(); defer { inboxLock.unlock() }
-        return logProcess === p
+        if swapped { old?.terminationHandler = nil; if old?.isRunning == true { old?.terminate() } }
     }
 
     /// Replaces the `log stream` that feeds decoder lines (engine thread).
@@ -1503,7 +1499,7 @@ final class VirtualDeviceEngine {
         // After a take-back the stream sets up its AAC decoder again and plays the first part through it
         // (off every grid); the lossless decoder after it gets the grid a fresh start, as the upgrade does.
         if !lossless, takeBackLine, rate == trackRate, let own = ownLinesUntil, at <= own { takeBackLossyAt = at }
-        else if lossless, let t = takeBackLossyAt, at > t, rate == trackRate, let own = ownLinesUntil, at <= own {
+        else if lossless, takeBackLossyAt != nil, rate == trackRate, let own = ownLinesUntil, at <= own {
             takeBackLossyAt = nil
             resetGrid()
             gridAwaitClean = Date().addingTimeInterval(5)
@@ -1817,15 +1813,16 @@ final class VirtualDeviceEngine {
             resetGrid()
             trackStartedLossy = false
             takeBackLossyAt = nil
-            if let l = ownLine { setSource(l.bits, lossy: !l.lossless) }
+            // only a lossless line with a depth, at the rate the track plays at: another rate's line is
+            // another decoder's, and must neither pin the depth nor hide a lossy line at the track's rate
+            let losslessLine = decoderRates.last(where: { $0.date > since && $0.lossless && $0.bits != nil && $0.rate == rate })
+            // the source comes from the same line the depth is pinned from
+            if let l = losslessLine ?? ownLine { setSource(l.bits, lossy: !l.lossless) }
             else { setSource(fileStats?.sourceBits, lossy: fileStats?.lossy ?? false, known: fileStats != nil) }
             // As for a new track, the track's own decoder lines can still come after the decision, also the
             // ones its rewind makes: they fill in the depth. Once its lossless line is in, the AAC decoder a
             // stream sets up again after the rewind is no verdict on the source.
             ownLinesUntil = max(ownLinesUntil ?? .distantPast, Date().addingTimeInterval(3))
-            // only a lossless line with a depth, at the rate the track plays at: another rate's line is
-            // another decoder's, and must neither pin the depth nor hide a lossy line at the track's rate
-            let losslessLine = decoderRates.last(where: { $0.date > since && $0.lossless && $0.bits != nil && $0.rate == rate })
             depthFromLine = losslessLine.map { !preRollLines.contains($0.date) } ?? false
             takeBackLine = losslessLine != nil
             if ownLine == nil { restartDecoderLog("take-back without a decoder line of its own (\(decoderFeedStatus()))") }
