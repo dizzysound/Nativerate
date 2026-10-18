@@ -412,6 +412,14 @@ final class VirtualDeviceEngine {
         // setUp reads Music's state itself.
         inboxLock.lock(); let stale = infoInbox.count; infoInbox = []; inboxLock.unlock()
         if stale > 0 { log("dropped \(stale) Music notices from before setup") }
+        // The engine object outlives a stop/start (the menu toggles it). A run that ended stepped aside,
+        // or after a failed take-back (which leaves the flag set), must not hand its idle state to the
+        // new run: setUp below takes the DAC and runs B, and the first Playing would then "take the
+        // output back" from our own B (GitHub #47: hog owner == own pid, the "other client" was B).
+        if steppedAside || resumeInfo != nil || resumeRetryAt != nil {
+            log("new run: dropping the idle state the last run left (stepped aside \(steppedAside), take-back pending \(resumeInfo != nil), retry holdoff \(resumeRetryAt != nil))")
+        }
+        steppedAside = false; resumeInfo = nil; resumeRetryAt = nil; idleSince = nil
         guard setUp() else {
             log("setup failed; engine idle until it is turned off")
             while !shouldStop { Thread.sleep(forTimeInterval: 0.1) }
