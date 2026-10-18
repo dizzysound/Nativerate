@@ -885,13 +885,15 @@ final class VirtualDeviceEngine {
                 Thread.sleep(forTimeInterval: 0.05)
                 if CA.defaultOutput() == ls {
                     resets += 1
-                    if let now = target() { back = now } // the target can drop out (or come back under a new id) during the hold
+                    // the target can drop out (or come back under a new id) during the hold
+                    guard let now = target() else { log("default output: every output went away during the hold; leaving it on the virtual device"); break }
+                    if now != back { log("restore target changed to \(CA.string(now, kAudioObjectPropertyName))"); back = now }
                     log("coreaudiod put the virtual device back as the default; restoring again: \(CA.setDefaultOutput(back))")
                 }
             }
             log("default output after 3 s: \(CA.string(CA.defaultOutput(), kAudioObjectPropertyName))\(resets > 0 ? " (\(resets) re-restores)" : "")")
         } else if restoreDefault, CA.defaultOutput() == ls {
-            log("default output: no output device is left to give it back to; it stays on the virtual device until the app is detached")
+            log("default output: left on the virtual device; no output device to give it to")
         }
         if restoreDefault {
             if let note = Self.restoreAlerts() { log(note) }
