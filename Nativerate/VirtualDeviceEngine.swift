@@ -141,7 +141,6 @@ final class VirtualDeviceEngine {
     // main thread
     private var observer: NSObjectProtocol?
     private var thread: Thread?
-    private var logProcess: Process?
     private var finished: DispatchSemaphore?
 
     // inbox, under inboxLock: main thread / log reader -> engine thread
@@ -149,6 +148,10 @@ final class VirtualDeviceEngine {
     private var infoInbox: [(Date, [AnyHashable: Any])] = []
     private var lineInbox: [(Date, String)] = []
     private var stopRequested = false
+    private var logProcess: Process?       // the `log stream` that feeds lineInbox
+    private var logProcessStart = Date()
+    private var lastStreamLineAt: Date?    // when the stream last delivered a line
+    private var feedNotes: [String] = []   // what the stream's supervisor wants in the engine log
 
     // engine thread
     private var ls = AudioObjectID(0)
@@ -202,6 +205,7 @@ final class VirtualDeviceEngine {
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
     private var depthFromLine = false // the track's depth came from a decoder line of its own: later lines in its window are the next track's
+    private var takeBackLine = false  // a take-back took the track's lossless line: a lossy line later in its window doesn't mark it lossy
     private var wantBits: Int?    // 16/24/32: the track plays in the DAC's non-mixable integer format of that depth (Integer Mode)
     private var appliedWant: Int? // wantBits when the DAC's format was last set (nil: the option's format isn't on the DAC)
     private var sourceLossy = false // armAt is for a skip (the gap already went through A)
@@ -346,7 +350,7 @@ final class VirtualDeviceEngine {
     func start() {
         guard thread == nil else { return }
         print("[Exclusive Mode] virtual-device engine: start requested")
-        inboxLock.lock(); stopRequested = false; infoInbox = []; lineInbox = []; inboxLock.unlock()
+        inboxLock.lock(); stopRequested = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; inboxLock.unlock()
         observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             self.inboxLock.lock(); self.infoInbox.append((Date(), note.userInfo ?? [:])); self.inboxLock.unlock()
@@ -377,8 +381,9 @@ final class VirtualDeviceEngine {
         finished = nil
         if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
         observer = nil
-        logProcess?.terminate()
-        logProcess = nil
+        inboxLock.lock(); let old = logProcess; logProcess = nil; inboxLock.unlock()
+        old?.terminationHandler = nil
+        if old?.isRunning == true { old?.terminate() }
     }
 
     private func startDecoderLog() {
@@ -388,16 +393,62 @@ final class VirtualDeviceEngine {
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
-        var partial = "" // only touched by the serial readability handler
+        var partial = Data() // only touched by the serial readability handler; bytes, so a chunk ending inside a multi-byte character loses nothing
         out.fileHandleForReading.readabilityHandler = { [weak self] h in
-            guard let self, let chunk = String(data: h.availableData, encoding: .utf8), !chunk.isEmpty else { return }
-            partial += chunk
-            var lines = partial.components(separatedBy: "\n")
-            partial = lines.removeLast()
+            let chunk = h.availableData
+            if chunk.isEmpty { h.readabilityHandler = nil; return } // the stream closed: the termination handler restarts it
+            guard let self else { return }
+            partial.append(chunk)
+            var lines: [String] = []
+            while let nl = partial.firstIndex(of: 0x0A) {
+                lines.append(String(decoding: partial[partial.startIndex..<nl], as: UTF8.self))
+                partial.removeSubrange(partial.startIndex...nl)
+            }
+            guard !lines.isEmpty else { return }
             let now = Date()
-            self.inboxLock.lock(); self.lineInbox += lines.map { (now, $0) }; self.inboxLock.unlock()
+            self.inboxLock.lock(); self.lineInbox += lines.map { (now, $0) }; self.lastStreamLineAt = now; self.inboxLock.unlock()
         }
-        do { try p.run(); logProcess = p } catch { print("[Exclusive Mode] could not start log stream: \(error)") }
+        // Pastor, 2026-10-18: after a 3 h idle no decoder line reached the engine, though Music logged them
+        // (Old Brown Shoe was judged lossy for want of its own line). Whether the stream ended or stalled is
+        // not known: an ended one is started again here, a stalled one is replaced at the next step-aside.
+        p.terminationHandler = { [weak self] proc in
+            guard let self else { return }
+            self.inboxLock.lock()
+            let current = self.logProcess === proc && !self.stopRequested
+            let lived = Date().timeIntervalSince(self.logProcessStart)
+            if current { self.feedNotes.append("decoder log stream ended (status \(proc.terminationStatus), after \(Int(lived)) s); starting it again") }
+            self.inboxLock.unlock()
+            guard current else { return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (lived < 5 ? 30 : 1)) { [weak self] in
+                guard let self else { return }
+                self.inboxLock.lock(); let still = self.logProcess === proc && !self.stopRequested; self.inboxLock.unlock()
+                if still { self.startDecoderLog() }
+            }
+        }
+        inboxLock.lock()
+        if stopRequested { inboxLock.unlock(); return }
+        let old = logProcess
+        logProcess = p; logProcessStart = Date()
+        inboxLock.unlock()
+        if old !== p, old?.isRunning == true { old?.terminationHandler = nil; old?.terminate() }
+        do { try p.run() } catch {
+            print("[Exclusive Mode] could not start log stream: \(error)")
+            inboxLock.lock(); feedNotes.append("could not start the decoder log stream: \(error)"); inboxLock.unlock()
+        }
+    }
+
+    /// Replaces the `log stream` that feeds decoder lines (engine thread).
+    private func restartDecoderLog(_ why: String) {
+        log("decoder log stream restarted: \(why)")
+        startDecoderLog()
+    }
+
+    /// For the engine log: whether the stream runs and how long ago it last delivered a line.
+    private func decoderFeedStatus() -> String {
+        inboxLock.lock(); defer { inboxLock.unlock() }
+        let running = logProcess?.isRunning == true
+        let last = lastStreamLineAt.map { "last line \(Int(Date().timeIntervalSince($0))) s ago" } ?? "no line yet this run"
+        return "decoder log stream \(running ? "running" : "NOT running"), \(last)"
     }
 
     // MARK: - Engine thread
@@ -540,9 +591,10 @@ final class VirtualDeviceEngine {
     /// Drains the inbox; call instead of sleeping while waiting for Music's notifications.
     private func pump() {
         inboxLock.lock()
-        let infos = infoInbox, lines = lineInbox
-        infoInbox = []; lineInbox = []
+        let infos = infoInbox, lines = lineInbox, notes = feedNotes
+        infoInbox = []; lineInbox = []; feedNotes = []
         inboxLock.unlock()
+        for n in notes { log(n) }
         // in arrival order: a track's decoder line usually comes just before its Playing
         var events = infos.map { (at: $0.0, info: Optional($0.1), line: String?.none) } + lines.map { (at: $0.0, info: nil, line: Optional($0.1)) }
         events.sort { $0.at < $1.at }
@@ -1373,6 +1425,7 @@ final class VirtualDeviceEngine {
     private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil, lineAt: Date? = nil) {
         resetGrid()
         trackStartedLossy = false
+        takeBackLine = false
         trackRate = rate
         // a pre-roll line (the track before was playing) may be another track's: its own line can still correct it
         depthFromLine = bits != nil && !(lineAt.map { preRollLines.contains($0) } ?? false)
@@ -1425,7 +1478,7 @@ final class VirtualDeviceEngine {
         // of a line (pastor: "Uniform", lossy line 18 ms later; its samples fit no grid and the
         // Bit-perfect check blamed Music). A lossy line at its rate in its own window says otherwise;
         // a later lossless line upgrades it as usual (lossyTrackAt).
-        if !lossless, !sourceLossy, rate == trackRate, let own = ownLinesUntil, at <= own {
+        if !lossless, !sourceLossy, !takeBackLine, rate == trackRate, let own = ownLinesUntil, at <= own {
             log("the track's own decoder is lossy (\(Int(rate)) Hz)")
             lossyTrackAt = at; lossyStartAt = at
             setSource(nil, lossy: true)
@@ -1558,6 +1611,8 @@ final class VirtualDeviceEngine {
         if armAt != nil || armedAt != nil || latchedAt != nil || latchZeros.load(ordering: .acquiring) > 0 { disarm("stepping aside") }
         lateArmAt = nil; awaiting = nil; pendingUpgrade = nil; musicRateUnverified = false
         log("Music idle \(Int(after)) s: stepping aside (DAC released; the default output stays on the virtual device)")
+        // the hours of idle ahead are when a stream goes stale unnoticed
+        restartDecoderLog("stepping aside (\(decoderFeedStatus()))")
         dropInput.store(1, ordering: .releasing) // nothing reads the ring until the take-back
         tearDownDAC(keepOthers: true)
         if ls != 0 { log("virtual device scalar reset: \(CA.setScalar(ls, 1.0, Self.kRateScalar))"); lsScalar = 1 }
@@ -1738,7 +1793,13 @@ final class VirtualDeviceEngine {
             trackStartedLossy = false
             if let l = ownLine { setSource(l.bits, lossy: !l.lossless) }
             else { setSource(fileStats?.sourceBits, lossy: fileStats?.lossy ?? false, known: fileStats != nil) }
-            log("resume: \(name) at \(rate.map { "\(Int($0)) Hz" } ?? "the DAC's rate") (\(musicRate != nil ? "Music's rate for the track" : own != nil ? "its decoder line" : file != nil ? "file header" : recent != nil ? "newest decoder line, may be another track's" : "nothing says"))")
+            // As for a new track, the track's own decoder lines can still come after the decision, also the
+            // ones its rewind makes: they fill in the depth. Once its lossless line is in, the AAC decoder a
+            // stream sets up again after the rewind is no verdict on the source.
+            ownLinesUntil = max(ownLinesUntil ?? .distantPast, Date().addingTimeInterval(3))
+            depthFromLine = ownLine.map { $0.bits != nil && $0.lossless && !preRollLines.contains($0.date) } ?? false
+            takeBackLine = ownLine.map { $0.bits != nil && $0.lossless } ?? false
+            log("resume: \(name) at \(rate.map { "\(Int($0)) Hz" } ?? "the DAC's rate") (\(musicRate != nil ? "Music's rate for the track" : own != nil ? "its decoder line" : file != nil ? "file header" : recent != nil ? "newest decoder line, may be another track's" : "nothing says")); \(ownLine == nil ? "no decoder line of its own yet; " : "")\(decoderFeedStatus())")
         }
         setWantBits(logBits, lossless: !sourceLossy)
         let target = rate.flatMap { neededRate($0) } ?? curRate
