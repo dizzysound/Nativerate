@@ -1182,6 +1182,8 @@ final class VirtualDeviceEngine {
             let lib = own == nil ? librarySource(name: name) : (lossy: false, streamed: false)
             let libLossy = lib.lossy
             musicRateUnverified = lib.streamed
+            // the stream's own line came 1.8 s after Playing (pastor, 2026-10-18), 0.2 s inside the 2 s window
+            if lib.streamed { ownLinesUntil = max(ownLinesUntil ?? .distantPast, at.addingTimeInterval(3)) }
             // No line of its own because Music reused the decoder in use (it logs one per decoder, and a
             // lossy track needs an AAC one): the newest line, at this rate and lossless, is this track's
             // too (pastor, 2026-10-16: "Five Stop Mother Superior Rain" after an ALAC 16-bit 44.1k stream).
@@ -1276,14 +1278,16 @@ final class VirtualDeviceEngine {
     /// Matched and Apple Music tracks stream lossless or AAC, so they stay unknown.
     private func libraryLossy(name: String) -> Bool { librarySource(name: name).lossy }
 
-    /// `streamed`: an Apple Music subscription track with no file on disk. Music's sample rate for it is
-    /// the catalog AAC's, whatever the stream plays.
+    /// `streamed`: a track with no file on disk that is not an iCloud upload: an Apple Music subscription
+    /// track, or a stream whose library info Music leaves empty (pastor, 2026-10-18: kind "", cloud status
+    /// missing value for the whole stream, a 48k one). Music's sample rate for it is the catalog AAC's, or
+    /// the previous track's, whatever the stream plays.
     private func librarySource(name: String) -> (lossy: Bool, streamed: Bool) {
         guard let s = scripts.trackSource(), name.isEmpty || s.name == name else { return (false, false) }
         let lossyKind = s.kind.contains("AAC") || s.kind == "MPEG audio file"
         let lossy = lossyKind && (s.localFile || s.cloud == "uploaded")
         log("library: \(s.kind), \(s.cloud.isEmpty ? "no cloud status" : s.cloud), \(s.localFile ? "file on disk" : "no file on disk")\(lossy ? ": lossy" : "")")
-        return (lossy, !s.localFile && s.cloud == "subscription")
+        return (lossy, !s.localFile && s.cloud != "uploaded")
     }
 
     /// Every 0.5 s: counts the window if Music played steadily through it (Music ramps the level at a
