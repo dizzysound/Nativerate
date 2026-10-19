@@ -206,6 +206,8 @@ final class VirtualDeviceEngine {
     private var gridAwaitClean: Date?
     private var logBits: Int?     // the depth Music's log gave for the track
     private var depthFromLine = false // the track's depth came from a decoder line of its own: later lines in its window are the next track's
+    private var depthAdopted = false // that line came in the track's window, not right after the line the decision was taken on: it may be the next track's, so the grid can still correct it
+    private var decisionLineAt: Date? // the decoder line the decision was taken on, when it was
     private var takeBackLine = false  // a take-back took the track's lossless line: a lossy line later in its window doesn't mark it lossy
     private var takeBackLossyAt: Date? // such a lossy line was skipped: the next lossless one restarts the grid, as the upgrade after a lossy start does
     private var wantBits: Int?    // 16/24/32: the track plays in the DAC's non-mixable integer format of that depth (Integer Mode)
@@ -229,7 +231,8 @@ final class VirtualDeviceEngine {
     // 96 kHz ALAC), so the track's own lossless line at another rate overrides it.
     private var musicRateUnverified = false
     // a new track whose decoder line hasn't come yet; fallback: the line to use if none comes
-    private var awaiting: (name: String, tPlay: Date, until: Date, fallback: DecoderLine?)?
+    // `musicRate`: the fallback is Music's rate for a streamed track, held back for the stream's own line
+    private var awaiting: (name: String, tPlay: Date, until: Date, fallback: DecoderLine?, musicRate: Bool)?
     private var gateMarkedAt: Date?
     private var gateWaitsForMusic = false // after Music quit: the gate waits longer for its Playing
     private var regateOnSilence = false   // the gate let another sound through: close it when that ends
@@ -524,6 +527,8 @@ final class VirtualDeviceEngine {
                 resetGrid()
                 gridAwaitClean = Date().addingTimeInterval(5)
                 depthFromLine = up.bits != nil
+                depthAdopted = false
+                decisionLineAt = nil
                 setSource(up.bits, lossy: false)
                 setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
@@ -1195,7 +1200,7 @@ final class VirtualDeviceEngine {
         // gate, and the real track played at the old rate until its own line came. If no real one
         // follows, the next decoder line (or 3 s) decides for it.
         if playing, name.isEmpty, info["PersistentID"] == nil {
-            if gatePending, awaiting == nil { awaiting = ("(no name)", at, Date().addingTimeInterval(3), nil) }
+            if gatePending, awaiting == nil { awaiting = ("(no name)", at, Date().addingTimeInterval(3), nil, false) }
             log("playerInfo without a name or PersistentID: not a track; gate \(gatePending ? "held" : "open")")
             return
         }
@@ -1254,6 +1259,14 @@ final class VirtualDeviceEngine {
             // too (pastor, 2026-10-16: "Five Stop Mother Superior Rain" after an ALAC 16-bit 44.1k stream).
             let reused = own == nil && !libLossy ? decoderRates.last.flatMap { $0.rate == r && $0.lossless ? $0 : nil } : nil
             if let re = reused { log("new track \(name): no decoder line of its own; the decoder in use is lossless at \(Int(r)) Hz\(re.bits.map { ", \($0) bit" } ?? ""), so Music reused it") }
+            // A stream's Music rate is read before its decoder exists and can be wrong (pastor, 2026-10-18: 48000
+            // for a 44.1k ALAC stream, the DAC went 44.1 -> 48 -> 44.1): switching to it costs two switches and
+            // seconds of a wrong label, so hold the gate for the stream's own line (it came 1.4-2.3 s after Playing).
+            if own == nil, reused == nil, lib.streamed, !libLossy, neededRate(r) != nil {
+                awaiting = (name, at, Date().addingTimeInterval(3), (date: at, rate: r, bits: nil, lossless: true), true)
+                log("new track \(name): Music says \(Int(r)) Hz for a streamed track with no decoder line of its own yet; \(gatePending ? "holding at the gate" : "playing on at \(Int(curRate)) Hz") for its line (3 s)")
+                return
+            }
             decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
                    name: name + (own == nil ? " (Music's rate for the track; no decoder line at it yet)" : " (Music's rate for the track)"), tPlay: at,
                    sourceKnown: own != nil || libLossy || reused != nil, menuBits: reused?.bits, lineAt: own?.date)
@@ -1270,7 +1283,7 @@ final class VirtualDeviceEngine {
                 if st.lossy { setSource(nil, lossy: true) }
                 return
             }
-            awaiting = (name, at, Date().addingTimeInterval(3), nil)
+            awaiting = (name, at, Date().addingTimeInterval(3), nil, false)
             log("new track \(name): no decoder line for it yet; \(gatePending ? "holding at the gate" : "playing on at \(Int(curRate)) Hz") until one comes (3 s)")
             return
         }
@@ -1279,7 +1292,7 @@ final class VirtualDeviceEngine {
         // played at 48k and Earth was switched to 44.1k; each track's own line came ~0.4 s after its
         // Playing). Wait briefly for a newer line; if none comes, this one decides.
         if let own = prevOwnUntil, line.date <= own {
-            awaiting = (name, at, Date().addingTimeInterval(1), line)
+            awaiting = (name, at, Date().addingTimeInterval(1), line, false)
             log("new track \(name): the newest decoder line (\(Int(line.rate)) Hz, \(String(format: "%.3f", at.timeIntervalSince(line.date))) s before Playing) may be the previous track's; waiting 1 s for its own")
             return
         }
@@ -1315,8 +1328,20 @@ final class VirtualDeviceEngine {
         publishSource()
     }
 
+    /// Samples all on the 16-bit grid in a track whose own decoder line says a wider source: a 16-bit
+    /// master in a 24-bit file (pastor, 2026-10-18: Road To Reno, the same 48127 samples on the grid on
+    /// both plays and nothing off it for 36 s). The label keeps the depth Music's decoder reports. Not
+    /// for a line that came 0.5 s or more after the line the decision was taken on (the next track's may arrive
+    /// first; a stream's depth line follows its depthless 'qlac' line by milliseconds and is its own), nor for a
+    /// near-grid verdict, which the Bit-perfect check words with the grid's depth.
+    private var keepsLineDepth: Bool { gridVerdict == 16 && !gridNear && depthFromLine && !depthAdopted && (logBits ?? 0) > 16 }
+
+    private var publishedDepth: Int? {
+        keepsLineDepth ? logBits : gridVerdict.flatMap { $0 == 0 ? nil : $0 } ?? logBits
+    }
+
     private func publishSource() {
-        let shown = gridVerdict.flatMap { $0 == 0 ? nil : $0 } ?? logBits
+        let shown = publishedDepth
         let lossy = sourceLossy || (gridVerdict == 0 && gridInferredLossy)
         RendererOutput.shared.set(sourceBits: lossy ? nil : shown, lossy: lossy)
         // only a source known to be lossless on no grid means Music changes the samples
@@ -1416,7 +1441,7 @@ final class VirtualDeviceEngine {
             : near16 ? "\(o24) of \(nz) samples within 1/64 of a 16-bit step but not on it: rounded in the playback path, not bit-exact"
             : near24 ? "\(o24) of \(nz) samples off the 24-bit grid, \(f24) of \(low) low-level ones past 3/8 of a step: rounded in the playback path, not bit-exact"
             : v == 24 ? "\(o16) of \(nz) samples off the 16-bit grid, all on the 24-bit grid" : "all \(nz) on the 16-bit grid"
-        log("source depth from the samples: \(v == 0 ? "neither 16 nor 24 bit" : "\(v) bit") (\(why))\(logBits.map { $0 != v ? "; Music's log said \($0) bit" : "" } ?? "")")
+        log("source depth from the samples: \(v == 0 ? "neither 16 nor 24 bit" : "\(v) bit") (\(why))\(logBits.map { $0 != v ? "; Music's log said \($0) bit" : "" } ?? "")\(keepsLineDepth ? "; the label keeps Music's \(logBits ?? 0) bit" : "")")
         publishSource()
     }
 
@@ -1442,6 +1467,8 @@ final class VirtualDeviceEngine {
         trackRate = rate
         // a pre-roll line (the track before was playing) may be another track's: its own line can still correct it
         depthFromLine = bits != nil && !(lineAt.map { preRollLines.contains($0) } ?? false)
+        depthAdopted = false
+        decisionLineAt = lineAt
         setSource(bits ?? menuBits, lossy: !lossless, known: sourceKnown)
         setWantBits(bits, lossless: lossless)
         if !lossless { lossyTrackAt = Date() }
@@ -1484,6 +1511,8 @@ final class VirtualDeviceEngine {
                 if b != logBits { log("decoder line at \(b) bit in the track's window ignored: its depth came from an earlier line (probably the next track's)") }
             } else {
                 depthFromLine = true
+                // a stream's depthless 'qlac' line and its 'alac ... from N-bit source' line come within milliseconds
+                depthAdopted = !(decisionLineAt.map { at.timeIntervalSince($0) < 0.5 } ?? false)
                 setSource(b, lossy: false)
             }
         }
@@ -1519,7 +1548,7 @@ final class VirtualDeviceEngine {
         }
         if let aw = awaiting, !inRoutine {
             awaiting = nil
-            decide(rate, bits: bits, lossless: lossless, seenAgo: -at.timeIntervalSince(aw.tPlay), name: aw.name, tPlay: aw.tPlay)
+            decide(rate, bits: bits, lossless: lossless, seenAgo: -at.timeIntervalSince(aw.tPlay), name: aw.name, tPlay: aw.tPlay, lineAt: at)
             return
         }
         // A decoder for another rate while playing: the next track's pre-roll (8-12 s before the end:
@@ -1543,7 +1572,11 @@ final class VirtualDeviceEngine {
     private func tickLatchAndGate() {
         if let aw = awaiting, Date() > aw.until {
             awaiting = nil
-            if let f = aw.fallback {
+            if let f = aw.fallback, aw.musicRate {
+                log("no decoder line of its own for \(aw.name) within 3 s; Music's \(Int(f.rate)) Hz decides")
+                musicRateUnverified = true
+                decide(f.rate, bits: nil, lossless: true, seenAgo: 0, name: aw.name + " (Music's rate for the track; no decoder line at it yet)", tPlay: aw.tPlay, sourceKnown: false)
+            } else if let f = aw.fallback {
                 log("no newer decoder line for \(aw.name) within 1 s; the earlier one decides")
                 // the fallback line is from the previous track's window: its depth may be that track's
                 decide(f.rate, bits: nil, lossless: f.lossless, seenAgo: aw.tPlay.timeIntervalSince(f.date), name: aw.name, tPlay: aw.tPlay)
@@ -1790,8 +1823,10 @@ final class VirtualDeviceEngine {
         let rate: Float64?
         if pid != nil && pid == lastTrackID, let r = trackRate {
             rate = r
+            log("resume: \(name) is the track that was playing; keeping its rate \(Int(r)) Hz; \(resumeSourceStatus())")
         } else if pid != nil && pid == lastTrackID {
             rate = recent ?? LocalTrack.currentStats(attempts: 2)?.sampleRate
+            log("resume: \(name) is the track that was playing, with no rate decided for it; \(rate.map { "\(Int($0)) Hz" } ?? "the DAC's rate") (\(recent != nil ? "newest decoder line" : rate != nil ? "file header" : "nothing says")); \(resumeSourceStatus())")
         } else {
             // Another track: its own line can come after the take-back's setup (pastor Mac: Badlands'
             // 44.1k line 1.1 s after its Playing, after the rate was chosen; it played at the hymn's
@@ -1824,6 +1859,8 @@ final class VirtualDeviceEngine {
             // stream sets up again after the rewind is no verdict on the source.
             ownLinesUntil = max(ownLinesUntil ?? .distantPast, Date().addingTimeInterval(3))
             depthFromLine = losslessLine.map { !preRollLines.contains($0.date) } ?? false
+            depthAdopted = false
+            decisionLineAt = nil
             takeBackLine = losslessLine != nil
             if ownLine == nil { restartDecoderLog("take-back without a decoder line of its own (\(decoderFeedStatus()))") }
             log("resume: \(name) at \(rate.map { "\(Int($0)) Hz" } ?? "the DAC's rate") (\(musicRate != nil ? "Music's rate for the track" : own != nil ? "its decoder line" : file != nil ? "file header" : recent != nil ? "newest decoder line, may be another track's" : "nothing says")); \(ownLine == nil ? "no decoder line of its own yet; " : "")\(decoderFeedStatus())")
@@ -1835,6 +1872,10 @@ final class VirtualDeviceEngine {
         lastNewTrackAt = at
         inRoutine = false
         switchRate(target, name: name, tPlay: at, pausedAt: pausedAt)
+    }
+
+    private func resumeSourceStatus() -> String {
+        "source depth kept: \(sourceLossy ? "lossy" : publishedDepth.map { "\($0) bit" } ?? "unknown")"
     }
 
     private func disarm(_ why: String) {
