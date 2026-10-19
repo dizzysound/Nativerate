@@ -176,7 +176,7 @@ final class VirtualDeviceEngine {
     private var preRollLines: [Date] = []
     private var lossyTrackAt: Date?
     private var lossyStartAt: Date? // like lossyTrackAt, but the first lossless line does not clear it
-    private var pendingUpgrade: (rate: Float64, bits: Int?)?
+    private var pendingUpgrade: (rate: Float64, bits: Int?, lineAt: Date)?
     private var armAt: Date?
     private var armedAt: Date?
     private var lateArmAt: Date? // a pre-roll line that came early: arm again 1.5 s before the end
@@ -528,7 +528,7 @@ final class VirtualDeviceEngine {
                 gridAwaitClean = Date().addingTimeInterval(5)
                 depthFromLine = up.bits != nil
                 depthAdopted = false
-                decisionLineAt = nil
+                decisionLineAt = up.lineAt
                 setSource(up.bits, lossy: false)
                 setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
@@ -1494,7 +1494,7 @@ final class VirtualDeviceEngine {
         }
         // Apple Music streams can start on a lossy 48k decoder and set up the lossless one seconds later.
         let ownUpgrade = lossless && (lossyStartAt.map { at.timeIntervalSince($0) < 10 } ?? false) // timed only: a lossless next track at the same rate is a pre-roll
-        if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits); lossyTrackAt = nil }
+        if lossless, let t = lossyTrackAt, at.timeIntervalSince(t) < 10 { pendingUpgrade = (rate, bits, at); lossyTrackAt = nil }
         decoderRates.append((at, rate, bits, lossless))
         let preRoll = bits != nil && lossless && !ownUpgrade && playing && !inRoutine && awaiting == nil && at > (ownLinesUntil ?? .distantPast)
         if preRoll {
@@ -1543,7 +1543,11 @@ final class VirtualDeviceEngine {
                 if let up = pendingUpgrade, up.rate != rate { pendingUpgrade = nil }
             } else if lossless {
                 if pendingUpgrade?.rate != rate { log("the stream's own decoder is lossless at \(Int(rate)) Hz; Music said \(trackRate.map { "\(Int($0))" } ?? "?") Hz for the track") }
-                pendingUpgrade = (rate, bits ?? (pendingUpgrade?.rate == rate ? pendingUpgrade?.bits : nil))
+                if let up = pendingUpgrade, up.rate == rate {
+                    pendingUpgrade = (rate, bits ?? up.bits, up.lineAt)
+                } else {
+                    pendingUpgrade = (rate, bits, at)
+                }
             }
         }
         if let aw = awaiting, !inRoutine {
@@ -1819,6 +1823,9 @@ final class VirtualDeviceEngine {
         // track's 48k line), else its newest decoder line (Music decoded it before pausing), else the
         // local file's header; the DAC's current rate if none says
         let pid = (info["PersistentID"] as? NSNumber)?.int64Value ?? (name.isEmpty ? nil : Int64(truncatingIfNeeded: name.hashValue))
+        // the setup above did not drain the inbox: the track's own lines (a stream's AAC decoder, then its ALAC one) are still
+        // queued and the decision below would see only the first (pastor, 2026-10-18: Old Brown Shoe read lossy for 27 s)
+        pump()
         let recent = decoderRates.last.flatMap { Date().timeIntervalSince($0.date) < 30 ? $0.rate : nil }
         let rate: Float64?
         if pid != nil && pid == lastTrackID, let r = trackRate {
