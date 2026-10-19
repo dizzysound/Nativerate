@@ -1543,7 +1543,11 @@ final class VirtualDeviceEngine {
                 if let up = pendingUpgrade, up.rate != rate { pendingUpgrade = nil }
             } else if lossless {
                 if pendingUpgrade?.rate != rate { log("the stream's own decoder is lossless at \(Int(rate)) Hz; Music said \(trackRate.map { "\(Int($0))" } ?? "?") Hz for the track") }
-                pendingUpgrade = (rate, bits ?? (pendingUpgrade?.rate == rate ? pendingUpgrade?.bits : nil), pendingUpgrade?.rate == rate ? pendingUpgrade!.lineAt : at)
+                if let up = pendingUpgrade, up.rate == rate {
+                    pendingUpgrade = (rate, bits ?? up.bits, up.lineAt)
+                } else {
+                    pendingUpgrade = (rate, bits, at)
+                }
             }
         }
         if let aw = awaiting, !inRoutine {
