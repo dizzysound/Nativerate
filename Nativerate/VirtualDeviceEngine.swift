@@ -1267,7 +1267,7 @@ final class VirtualDeviceEngine {
                 // Not held anywhere (a skip or an advance while playing): B would play the new track at the old
                 // rate for the whole wait, then rewind (GitHub #57). Close the gate: B holds at the track's first
                 // sample, and the play restarts from there at the right rate once the line decides.
-                let held = gatePending || marker.load(ordering: .acquiring) >= 0 || latchZeros.load(ordering: .acquiring) > 0
+                let held = gatePending || latchedAt != nil || marker.load(ordering: .acquiring) >= 0 || latchZeros.load(ordering: .acquiring) > 0
                 if !held {
                     armAt = nil; lateArmAt = nil
                     gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing)
