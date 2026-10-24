@@ -20,7 +20,7 @@ Custom properties (CFNumber / CFDictionary, device object):
   1.1.5: a client's frames are added unless they lie past everything written so far (then they
   replace an old lap); 1.1.4 replaced on each new sample time and lost other apps' audio.
 - `'LSlt'` latency in frames (1.1.6; 0 = none): what the renderer adds after the loopback (its ring to
-  the DAC, ~0.35 s). The output scope reports it as kAudioDevicePropertyLatency so video stays in
+  the DAC, ~0.35-0.75 s, the Switch margin). The output scope reports it as kAudioDevicePropertyLatency so video stays in
   sync. Cleared when the renderer detaches.
 
 Build: `./build.sh` (clang, ad-hoc signed; the app's build scripts run it and copy the bundle into
