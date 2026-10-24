@@ -14,7 +14,7 @@ Nativerate has two modes:
 
 - **Switching** (upstream's approach, on by default): read Music's logs for the playing track's
   sample rate and set your output device to match. **Run script on rate change** in the menu can also run a shell
-  script of yours after each switch, with the rate in Hz (and the bit depth, when known) as
+  script of yours after each rate change, with the rate in Hz (and the bit depth, when known) as
   arguments.
 - **Exclusive Mode** (off by default): take over the output path, described next.
 
@@ -53,7 +53,7 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
 - A window points out Music settings that defeat bit-perfect playback (AutoMix/Crossfade, Sound
   Check, EQ, volume below 100).
 
-The menu shows the rate and the track's bit depth, for example "44.1 kHz / 24 bit". It says "lossy"
+With Exclusive Mode on, the menu shows the rate and the track's bit depth, for example "44.1 kHz / 24 bit". It says "lossy"
 for a lossy track (AAC or MP3), and "? bit" when the depth isn't known yet, for example when Music
 reused a decoder and logged nothing new for the track.
 
@@ -134,7 +134,8 @@ The Xcode build runs `HALPlugin/build.sh` to build the plug-in into the app's Re
   AddressSanitizer.
 - While the engine holds the DAC, choosing that DAC in the macOS Sound menu makes Control Center
   hang until the engine lets go. Use the app's **Output device** instead.
-- About 70-80 ms of latency at 44.1 kHz.
+- Exclusive Mode plays 0.35-0.75 s behind Music (Settings > Switch margin, 0.5 s by default); video
+  stays in sync because the driver reports it.
 - Music's AutoMix blends tracks, so a clean switch isn't possible; turn it off.
 
 ## Troubleshooting
@@ -170,7 +171,8 @@ if you'd rather not edit the README.
 
 If something goes wrong, **attach your logs**: in the app's menu, open **About Nativerate** and choose
 **Export logs…**. It writes one zip with the engine logs of the last three runs, every audio
-device's state (every stream and all physical formats each stream supports), the app's and Music's settings, the filtered system log around Core Audio and Music,
+device's state (every stream and all physical formats each stream supports), the app's and Music's
+settings, the filtered system log around Core Audio and Music,
 and crash reports from the last 14 days. It's built for debugging, so look inside before you post it
 publicly: it lists running processes and your device names. A report with that zip attached is far
 easier to act on.
