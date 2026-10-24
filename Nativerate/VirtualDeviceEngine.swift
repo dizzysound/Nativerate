@@ -1264,7 +1264,15 @@ final class VirtualDeviceEngine {
             // seconds of a wrong label, so hold the gate for the stream's own line (it came 1.4-2.3 s after Playing).
             if own == nil, reused == nil, lib.streamed, !libLossy, neededRate(r) != nil {
                 awaiting = (name, at, Date().addingTimeInterval(3), (date: at, rate: r, bits: nil, lossless: true), true)
-                log("new track \(name): Music says \(Int(r)) Hz for a streamed track with no decoder line of its own yet; \(gatePending ? "holding at the gate" : "playing on at \(Int(curRate)) Hz") for its line (3 s)")
+                // Not held anywhere (a skip or an advance while playing): B would play the new track at the old
+                // rate for the whole wait, then rewind (GitHub #57). Close the gate: B holds at the track's first
+                // sample, and the play restarts from there at the right rate once the line decides.
+                let held = gatePending || marker.load(ordering: .acquiring) >= 0 || latchZeros.load(ordering: .acquiring) > 0
+                if !held {
+                    armAt = nil; lateArmAt = nil
+                    gatePending = true; gateMarkedAt = nil; gate.store(1, ordering: .releasing)
+                }
+                log("new track \(name): Music says \(Int(r)) Hz for a streamed track with no decoder line of its own yet; \(held ? "holding at the gate or the old track's end" : "closing the gate") for its line (3 s)")
                 return
             }
             decide(r, bits: own.flatMap { depthTrusted($0.date, tPlay: at) ? $0.bits : nil }, lossless: own?.lossless ?? !libLossy, seenAgo: own.map { at.timeIntervalSince($0.date) } ?? 0,
