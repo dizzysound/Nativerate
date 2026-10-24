@@ -218,6 +218,7 @@ final class VirtualDeviceEngine {
     // Check blamed Music for their off-grid samples)
     private var sourceKnown = true
     private var trackStartedLossy = false // this track had a lossy decoder of its own (a stream's start)
+    private var newestDecoderLossy = false // when the track was decided, the newest decoder line (the one Music may have reused) was lossy
     private var gridInferredLossy = false // off every grid with nothing in Music changing samples: lossy
     private var latchedAt: Date?
     private var gatePending = false
@@ -1443,9 +1444,9 @@ final class VirtualDeviceEngine {
         // readable in Music changes samples (Music reuses a decoder across same-format tracks and logs
         // no line: coffee, "Get Behind the Mule" on Another Day's AAC decoder; showed "? bit").
         if v == 0, !sourceLossy {
-            gridInferredLossy = trackStartedLossy || (!sourceKnown && musicLeavesSamplesAlone())
+            gridInferredLossy = SourceInference.offGridIsLossy(trackStartedLossy: trackStartedLossy, sourceKnown: sourceKnown, newestDecoderLossy: newestDecoderLossy, musicLeavesSamplesAlone: musicLeavesSamplesAlone)
         }
-        let why = v == 0 ? "on neither the 16- nor the 24-bit grid (\(o24) of \(nz) samples): \(sourceLossy ? "lossy" : gridInferredLossy ? (trackStartedLossy ? "lossy (it started on a lossy decoder)" : "lossy (no decoder line of its own; Music's volume 100, Sound Check and Sound Enhancer off)") : !sourceKnown ? "no decoder line of its own, so lossy or changed by Music" : "Music changes them (volume, Sound Check, EQ) or the source is float")"
+        let why = v == 0 ? "on neither the 16- nor the 24-bit grid (\(o24) of \(nz) samples): \(sourceLossy ? "lossy" : gridInferredLossy ? (trackStartedLossy ? "lossy (it started on a lossy decoder)" : "lossy (no decoder line of its own, the decoder it reused is lossy; Music's volume 100, Sound Check and Sound Enhancer off)") : !sourceKnown ? "no decoder line of its own, so lossy or changed by Music" : "Music changes them (volume, Sound Check, EQ) or the source is float")"
             : near16 ? "\(o24) of \(nz) samples within 1/64 of a 16-bit step but not on it: rounded in the playback path, not bit-exact"
             : near24 ? "\(o24) of \(nz) samples off the 24-bit grid, \(f24) of \(low) low-level ones past 3/8 of a step: rounded in the playback path, not bit-exact"
             : v == 24 ? "\(o16) of \(nz) samples off the 16-bit grid, all on the 24-bit grid" : "all \(nz) on the 16-bit grid"
@@ -1471,6 +1472,7 @@ final class VirtualDeviceEngine {
     private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil, lineAt: Date? = nil) {
         resetGrid()
         trackStartedLossy = false
+        newestDecoderLossy = decoderRates.last.map { !$0.lossless } ?? false
         takeBackLine = false; takeBackLossyAt = nil
         trackRate = rate
         // a pre-roll line (the track before was playing) may be another track's: its own line can still correct it
