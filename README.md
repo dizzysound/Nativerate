@@ -13,7 +13,9 @@ and has grown into a separate app. It keeps upstream's sample-rate switching and
 Nativerate has two modes:
 
 - **Switching** (upstream's approach, on by default): read Music's logs for the playing track's
-  sample rate and set your output device to match.
+  sample rate and set your output device to match. **Run script on rate change** in the menu can also run a shell
+  script of yours after each switch, with the rate in Hz (and the bit depth, when known) as
+  arguments.
 - **Exclusive Mode** (off by default): take over the output path, described next.
 
 ## Exclusive Mode
@@ -42,14 +44,18 @@ Turn it on with "Exclusive Mode" in the menu. With it on:
   format): a lossless track plays in the DAC's integer format of its own depth (16, 24 or 32 bit), so a
   DAC-side bit-perfect test sees the track's depth. With no format of that depth, the widest stays. Keep
   Music's volume at 100 and Sound Check and EQ off, or turn on TPDF dither.
-- After 60 s without playback it gives the DAC and the default output back ("Settings > Release DAC when
-  Music is idle"), and takes them again when Music plays (about 2 s from play to sound on the
+- After 60 s without playback it releases the DAC ("Settings > Release DAC when Music is idle"), so
+  other apps can use it, and takes it again when Music plays (about 2 s from play to sound on the
   Babyface Pro).
 - Optional, off by default: **Settings > Inter-sample overshoot protection**, a fixed -3.0 dB on
   the output for loud masters that peak above full scale between samples. With it on, the output is
   no longer bit-perfect (Bit-perfect check says so).
 - A window points out Music settings that defeat bit-perfect playback (AutoMix/Crossfade, Sound
   Check, EQ, volume below 100).
+
+The menu shows the rate and the track's bit depth, for example "44.1 kHz / 24 bit". It says "lossy"
+for a lossy track (AAC or MP3), and "? bit" when the depth isn't known yet, for example when Music
+reused a decoder and logged nothing new for the track.
 
 The **Bit-perfect check** menu item reports whether your current path is bit-perfect and, if not, why.
 
@@ -75,6 +81,13 @@ MacBook Pro's speakers.
 Using something else? A [hardware report](https://github.com/dizzysound/Nativerate/issues/new?template=hardware_report.yml)
 takes a minute and helps the next person with the same DAC.
 
+## Requirements
+
+- macOS 15 or later, with Apple Music's Lossless mode on.
+- Switching reads Music's logs through `OSLog`, so the user running Nativerate must be an **admin**.
+- The app can't be sandboxed, because of how it reads those logs and talks to Core Audio.
+- Use it at your own risk: the authors aren't liable for any loss or damage from using it.
+
 ## Try it
 
 Download the latest release from [Releases](https://github.com/dizzysound/Nativerate/releases).
@@ -99,7 +112,7 @@ To remove it: **Settings > Exclusive Mode driver > Remove…**, then delete the 
 
 ## Build it
 
-Requirements: macOS 15 or later, Xcode 27 (the SwiftUI macros need Xcode, not just the Command
+Requirements: Xcode 27 (the SwiftUI macros need Xcode, not just the Command
 Line Tools). The build is universal; it has only been run on Apple Silicon.
 
 ```bash
@@ -134,8 +147,7 @@ The Xcode build runs `HALPlugin/build.sh` to build the plug-in into the app's Re
   ```
 
   macOS starts it again in a few seconds. Reboot only if that does not help.
-- **Reporting a problem:** use **About > Export Logs…**. The zip lists every device, every
-  stream, and all physical formats each stream supports.
+- **Reporting a problem:** use **About Nativerate > Export logs…** (see below for what the zip holds).
 
 ## License and credits
 
@@ -143,13 +155,6 @@ Nativerate is licensed under GPL-3.0 (see `LICENSE`), as is the project it came 
 LosslessSwitcher is Copyright Vincent Neo and contributors; see
 [upstream](https://github.com/vincentneo/LosslessSwitcher), and consider
 [sponsoring its author](https://github.com/sponsors/vincentneo).
-
-## Requirements
-
-- macOS 15 or later, with Apple Music's Lossless mode on.
-- Switching reads Music's logs through `OSLog`, so the user running Nativerate must be an **admin**.
-- The app can't be sandboxed, because of how it reads those logs and talks to Core Audio.
-- Use it at your own risk: the authors aren't liable for any loss or damage from using it.
 
 ## Tested devices and reports
 
@@ -165,7 +170,7 @@ if you'd rather not edit the README.
 
 If something goes wrong, **attach your logs**: in the app's menu, open **About Nativerate** and choose
 **Export logs…**. It writes one zip with the engine logs of the last three runs, every audio
-device's state, the app's and Music's settings, the filtered system log around Core Audio and Music,
+device's state (every stream and all physical formats each stream supports), the app's and Music's settings, the filtered system log around Core Audio and Music,
 and crash reports from the last 14 days. It's built for debugging, so look inside before you post it
 publicly: it lists running processes and your device names. A report with that zip attached is far
 easier to act on.
@@ -174,4 +179,6 @@ easier to act on.
 
 - [Sweep](https://github.com/JohnSundell/Sweep), by @JohnSundell, an easy-to-use Swift `String` scanner.
 - [SimplyCoreAudio](https://github.com/rnine/SimplyCoreAudio), by @rnine, a framework that makes Core Audio much easier to use.
+- [mediaremote-adapter](https://github.com/dizzysound/mediaremote-adapter), for reading what Music is playing
+  through MediaRemote.
 - [PrivateMediaRemote](https://github.com/PrivateFrameworks/MediaRemote), by @DimitarNestorov, for the private media remote framework.
