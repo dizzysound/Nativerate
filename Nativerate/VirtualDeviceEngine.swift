@@ -2029,7 +2029,7 @@ final class VirtualDeviceEngine {
         let tPlay = gatePending ? min(tPlay, gateMarkedAt ?? tPlay) : tPlay
         // Music already paused, and not by a caller: the listener paused after the Playing that
         // brought us here. The rate still switches; Music stays paused (it used to play again here).
-        let listenerPaused = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
+        var listenerPaused = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
         _ = scripts.pause()
         var m = marker.load(ordering: .acquiring)
         // a new track reported late (a skip): the gap before it, if B hasn't played it yet
@@ -2050,8 +2050,16 @@ final class VirtualDeviceEngine {
             let target = dacFormat(r) ?? AudioStreamBasicDescription(mSampleRate: r, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 0, mBitsPerChannel: 0, mReserved: 0)
             // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
             // time: playing into it dropped audio and left the ring full. Music stays paused until it settles.
-            let ready = StallPolicy.settle(first: 12, attempt: { [unowned self] timeout in
-                DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, stalled: {
+            var watch = StallPolicy.ListenerWatch()
+            let ready = StallPolicy.settle(first: 12, cancelled: { [unowned self] in self.shouldStop }, attempt: { [unowned self] timeout in
+                DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, cancelled: {
+                    self.pump() // Music's notices: the listener's play and pause during the wait
+                    if watch.observe(playing: self.playing, lastNoticeAt: self.lastInfoAt, now: Date()) {
+                        self.log("  Music playing during the DAC wait; paused again")
+                        _ = self.scripts.pause()
+                    }
+                    return self.shouldStop
+                }, stalled: {
                     guard let p = self.procB else { return }
                     self.log("  DAC keeps stopping; restarting B")
                     AudioDeviceStop(self.dac, p); AudioDeviceStart(self.dac, p)
@@ -2059,6 +2067,8 @@ final class VirtualDeviceEngine {
             }, stillWaiting: { [unowned self] in
                 self.log("  DAC NOT ready after \(self.ms(td)): \(CA.formats(self.dacOut)); Music stays paused, waiting up to \(Int(StallPolicy.dacSettleExtraWait)) s more")
             })
+            if shouldStop { log("  turned off during the DAC wait; switch abandoned"); return }
+            if watch.listenerPaused { listenerPaused = true }
             log("  DAC \(ready ? "ready" : "NOT ready") after \(ms(td)): \(CA.formats(dacOut))")
             updateOutFormat()
         }
@@ -2072,7 +2082,7 @@ final class VirtualDeviceEngine {
             // as the play path does: the device poll would take a default moved during the switch
             // for the listener's pick and follow it
             reclaimDefault()
-            log("  Music was paused before the switch (the listener's pause): stays paused; switch \(switches) done \(ms(t)) after the request")
+            log("  Music was paused by the listener (before or during the switch): stays paused; switch \(switches) done \(ms(t)) after the request")
             return
         }
         let pos = scripts.position() ?? 0
