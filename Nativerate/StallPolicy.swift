@@ -30,25 +30,26 @@ enum StallPolicy {
         static let echoWindow: TimeInterval = 1.5 // our own pause echoes back as a Paused notice this late
         private var played = false
         private var pausedAfter = false
+        private var lastPlaying = false // the last notice since the switch began
         private var echoes = 1 // the switch's own pause, issued just before the wait
         private let startedAt: Date
         private var echoUntil: Date
         private var repauseAt = Date.distantPast
-        private var seenNotice = Date.distantPast
 
         init(startedAt: Date) {
             self.startedAt = startedAt
             echoUntil = startedAt.addingTimeInterval(Self.echoWindow)
         }
 
+        /// `notices`: every Music notice since the last call, in order (a play and a pause can arrive together).
         /// True when Music must be paused again now.
-        mutating func observe(playing: Bool, lastNoticeAt: Date, now: Date) -> Bool {
-            if now > echoUntil { echoes = 0 }
-            // a notice from before the switch is not news (the Playing that brought us here)
-            guard lastNoticeAt > startedAt else { return false }
-            if lastNoticeAt != seenNotice {
-                seenNotice = lastNoticeAt
-                if playing {
+        mutating func observe(notices: [(playing: Bool, at: Date)], now: Date) -> Bool {
+            for n in notices {
+                // a notice from before the switch is not news (the Playing that brought us here)
+                guard n.at > startedAt else { continue }
+                if n.at > echoUntil { echoes = 0 }
+                lastPlaying = n.playing
+                if n.playing {
                     played = true
                     pausedAfter = false
                 } else if echoes > 0 {
@@ -57,7 +58,8 @@ enum StallPolicy {
                     pausedAfter = true
                 }
             }
-            guard playing, now >= repauseAt else { return false }
+            if now > echoUntil { echoes = 0 }
+            guard lastPlaying, now >= repauseAt else { return false }
             echoes += 1
             echoUntil = now.addingTimeInterval(Self.echoWindow)
             repauseAt = echoUntil

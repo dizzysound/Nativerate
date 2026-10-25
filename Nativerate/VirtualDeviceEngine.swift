@@ -201,6 +201,8 @@ final class VirtualDeviceEngine {
     private var lastInfoAt = Date.distantPast
     /// A switch abandoned by a stop had paused Music that was playing: the teardown plays it again.
     private var resumeMusicOnStop = false
+    /// Music's play/pause notices in arrival order, collected while a switch waits for the DAC.
+    private var noticeTap: [(playing: Bool, at: Date)]?
     private var gridSince: Date?
     private var gridVerdict: Int? // 16, 24, or 0 = on neither grid
     // after a lossless upgrade: skip windows until one is on the 24-bit grid (Music still plays the
@@ -942,7 +944,7 @@ final class VirtualDeviceEngine {
 
     /// Every exit path: IO stopped, DAC mixable and released, scalar reset, default output restored.
     private func tearDown(restoreDefault: Bool, resumeMusic: Bool) {
-        let wasPlaying = resumeMusic && (musicPlaying() || resumeMusicOnStop)
+        let wasPlaying = resumeMusic && (musicPlaying() || (resumeMusicOnStop && musicRunning()))
         resumeMusicOnStop = false
         if wasPlaying { _ = scripts.pause(); _ = wait(1) { !self.playing } }
         if let p = procA {
@@ -1191,6 +1193,7 @@ final class VirtualDeviceEngine {
         let pid = (info["PersistentID"] as? NSNumber)?.int64Value ?? (name.isEmpty ? nil : Int64(truncatingIfNeeded: name.hashValue))
         log("playerInfo: \(state) \(name)")
         playing = state == "Playing"
+        noticeTap?.append((playing, at))
         guard !inRoutine else { return } // our own pause/play
         if steppedAside {
             // Music plays straight to the DAC now; the run loop takes the output back
@@ -2054,10 +2057,14 @@ final class VirtualDeviceEngine {
             // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
             // time: playing into it dropped audio and left the ring full. Music stays paused until it settles.
             var watch = StallPolicy.ListenerWatch(startedAt: t)
+            noticeTap = []
+            defer { noticeTap = nil }
             let ready = StallPolicy.settle(first: 12, cancelled: { [unowned self] in self.shouldStop }, attempt: { [unowned self] timeout in
                 DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, cancelled: {
                     self.pump() // Music's notices: the listener's play and pause during the wait
-                    if watch.observe(playing: self.playing, lastNoticeAt: self.lastInfoAt, now: Date()) {
+                    let notices = self.noticeTap ?? []
+                    self.noticeTap = []
+                    if watch.observe(notices: notices, now: Date()) {
                         self.log("  Music playing during the DAC wait; paused again")
                         _ = self.scripts.pause()
                     }
@@ -2072,7 +2079,7 @@ final class VirtualDeviceEngine {
             })
             if shouldStop {
                 // this switch paused Music; the teardown plays it again unless the listener wanted it paused
-                resumeMusicOnStop = !listenerPaused && !watch.listenerPaused
+                resumeMusicOnStop = !listenerPaused && !watch.listenerPaused && musicRunning()
                 log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")
                 return
             }
