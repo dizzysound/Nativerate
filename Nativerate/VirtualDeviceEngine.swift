@@ -2038,10 +2038,11 @@ final class VirtualDeviceEngine {
         // Music's notices from the start of the switch to the play decision (the boundary wait, the rate
         // change, the DAC wait, the command wait): the listener's play and pause in any of them decide
         // whether Music is played again
-        var watch = StallPolicy.ListenerWatch(startedAt: t)
         noticeTap = []
         defer { noticeTap = nil }
-        var listenerPaused = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
+        let pausedAtStart = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
+        // pausing a Music that is already paused (the caller's pause, the listener's) may post no notice
+        var watch = StallPolicy.ListenerWatch(startedAt: t, pausedAtStart: pausedAtStart, ownPauseEchoes: pausedAt == nil && !pausedAtStart)
         _ = scripts.pause()
         var m = marker.load(ordering: .acquiring)
         // a new track reported late (a skip): the gap before it, if B hasn't played it yet
@@ -2068,8 +2069,13 @@ final class VirtualDeviceEngine {
                     let notices = self.noticeTap ?? []
                     self.noticeTap = []
                     if watch.observe(notices: notices, now: Date()) {
-                        self.log("  Music playing during the DAC wait; paused again")
-                        _ = self.scripts.pause()
+                        let state = self.scripts.playerState()
+                        if state == nil || state == "playing" {
+                            self.log("  Music playing during the DAC wait; paused again")
+                            _ = self.scripts.pause()
+                        } else {
+                            watch.repauseFoundPaused()
+                        }
                     }
                     return self.shouldStop
                 }, stalled: {
@@ -2083,7 +2089,7 @@ final class VirtualDeviceEngine {
             if shouldStop {
                 _ = watch.observe(notices: noticeTap ?? [], now: Date())
                 // this switch paused Music; the teardown plays it again unless the listener wanted it paused
-                resumeMusicOnStop = !listenerPaused && !watch.listenerPaused && musicRunning()
+                resumeMusicOnStop = !watch.listenerPaused && musicRunning()
                 log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")
                 return
             }
@@ -2099,7 +2105,7 @@ final class VirtualDeviceEngine {
         pump()
         _ = watch.observe(notices: noticeTap ?? [], now: Date())
         noticeTap = []
-        if watch.listenerPaused { listenerPaused = true }
+        let listenerPaused = watch.listenerPaused
         if !listenerPaused && !musicRunning() {
             // the engine's own quit check is off during a switch; Music asked to play now would be relaunched
             reclaimDefault()

@@ -31,13 +31,19 @@ enum StallPolicy {
         private var played = false
         private var pausedAfter = false
         private var lastPlaying = false // the last notice since the switch began
-        private var echoes = 1 // the switch's own pause, issued just before the wait
+        private var echoes: Int // the switch's own pause, if Music was playing for it to pause
+        private var pausedAtStart: Bool // the listener had already paused before the switch began
         private let startedAt: Date
         private var echoUntil: Date
         private var repauseAt = Date.distantPast
 
-        init(startedAt: Date) {
+        /// `pausedAtStart`: Music was already paused by the listener when the switch began; a later play
+        /// replaces that. `ownPauseEchoes`: false when Music was already paused, so the switch's pause
+        /// changes nothing and may post no notice that a listener pause could be mistaken for.
+        init(startedAt: Date, pausedAtStart: Bool = false, ownPauseEchoes: Bool = true) {
             self.startedAt = startedAt
+            self.pausedAtStart = pausedAtStart
+            echoes = ownPauseEchoes ? 1 : 0
             echoUntil = startedAt.addingTimeInterval(Self.echoWindow)
         }
 
@@ -51,6 +57,7 @@ enum StallPolicy {
                 lastPlaying = n.playing
                 if n.playing {
                     played = true
+                    pausedAtStart = false
                     pausedAfter = false
                 } else if echoes > 0 {
                     echoes -= 1
@@ -66,7 +73,13 @@ enum StallPolicy {
             return true
         }
 
-        var listenerPaused: Bool { played && pausedAfter }
+        /// The re-pause that `observe` asked for found Music already paused (the listener's pause is on its
+        /// way): it posts no echo, so its credit must not swallow that pause.
+        mutating func repauseFoundPaused() {
+            echoes = max(0, echoes - 1)
+        }
+
+        var listenerPaused: Bool { pausedAtStart || (played && pausedAfter) }
     }
 
     /// The clock lock holds the ring's fill for good, so a ring that filled up while the DAC stalled is cut

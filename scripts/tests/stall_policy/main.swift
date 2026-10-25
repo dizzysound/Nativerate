@@ -106,5 +106,40 @@ w = StallPolicy.ListenerWatch(startedAt: at(0))
 check("early gap: no re-pause (it ends paused)", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(0.3)), (playing: false, at: at(0.9))], now: at(2)), false)
 check("early gap: listener paused", w.listenerPaused, true)
 
+// Music already paused (a caller paused it; the switch's pause posts no notice): the listener's play, then
+// pause, before any echo arrives, must not be taken for the switch's echo
+w = StallPolicy.ListenerWatch(startedAt: at(0), ownPauseEchoes: false)
+check("caller-paused: play is paused again", w.observe(notices: [(playing: true, at: at(0.3))], now: at(0.31)), true)
+check("caller-paused: our re-pause's echo", w.observe(notices: [(playing: false, at: at(0.4))], now: at(0.41)), false)
+check("caller-paused: only our echo so far", w.listenerPaused, false)
+check("caller-paused: listener's pause", w.observe(notices: [(playing: false, at: at(0.6))], now: at(0.61)), false)
+check("caller-paused: listener paused", w.listenerPaused, true)
+
+// the same with a play and a pause arriving together and no echo at all
+w = StallPolicy.ListenerWatch(startedAt: at(0), ownPauseEchoes: false)
+check("no echo: batch ends paused", w.observe(notices: [(playing: true, at: at(0.3)), (playing: false, at: at(0.6))], now: at(0.7)), false)
+check("no echo: listener paused", w.listenerPaused, true)
+
+// a re-pause that finds Music already paused posts no echo: the listener's pause behind it still counts
+w = StallPolicy.ListenerWatch(startedAt: at(0))
+check("empty re-pause: first notice (switch's echo)", w.observe(notices: [(playing: false, at: at(0.05))], now: at(0.06)), false)
+check("empty re-pause: play", w.observe(notices: [(playing: true, at: at(5))], now: at(5.01)), true)
+w.repauseFoundPaused()
+check("empty re-pause: listener's pause", w.observe(notices: [(playing: false, at: at(5.02))], now: at(5.03)), false)
+check("empty re-pause: listener paused", w.listenerPaused, true)
+
+// Music paused by the listener before the switch: that stands until the listener plays, and a later play
+// replaces it (the latest action wins)
+w = StallPolicy.ListenerWatch(startedAt: at(0), pausedAtStart: true, ownPauseEchoes: false)
+check("paused at start: listener paused", w.listenerPaused, true)
+check("paused at start: its late notice changes nothing", w.observe(notices: [(playing: false, at: at(0.02))], now: at(0.03)), false)
+check("paused at start: still paused", w.listenerPaused, true)
+check("paused at start: play during the wait is paused again", w.observe(notices: [(playing: true, at: at(10))], now: at(10.01)), true)
+check("paused at start: play replaces it", w.listenerPaused, false)
+check("paused at start: our re-pause's echo", w.observe(notices: [(playing: false, at: at(10.1))], now: at(10.2)), false)
+check("paused at start: still plays at the end", w.listenerPaused, false)
+check("paused at start: pause again", w.observe(notices: [(playing: false, at: at(20))], now: at(20.01)), false)
+check("paused at start: paused at the end", w.listenerPaused, true)
+
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
