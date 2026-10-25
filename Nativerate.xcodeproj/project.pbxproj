@@ -34,6 +34,7 @@
 		12AFF5C12811AD40001CC6ED /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12AFF5C02811AD40001CC6ED /* AppDelegate.swift */; };
 		12F1AA572868639A006C1AD8 /* DeviceMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F1AA562868639A006C1AD8 /* DeviceMenuItem.swift */; };
 		A2721B02A2721B02A2721B02 /* SourceInference.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2721B01A2721B01A2721B01 /* SourceInference.swift */; };
+		A2914B02A2914B02A2914B02 /* StallPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2914B01A2914B01A2914B01 /* StallPolicy.swift */; };
 		BF0C90C82B20BFD6002F99C9 /* Nativerate.sdef in Resources */ = {isa = PBXBuildFile; fileRef = BF0C90C72B20BFD6002F99C9 /* Nativerate.sdef */; };
 		BF0C90CA2B20C163002F99C9 /* ScriptableApplicationCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0C90C92B20C163002F99C9 /* ScriptableApplicationCommand.swift */; };
 		BF342D7C2E0935980032F398 /* MediaRemoteAdapter in Frameworks */ = {isa = PBXBuildFile; productRef = BF342D7B2E0935980032F398 /* MediaRemoteAdapter */; };
@@ -86,6 +87,7 @@
 		12AFF5C02811AD40001CC6ED /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		12F1AA562868639A006C1AD8 /* DeviceMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMenuItem.swift; sourceTree = "<group>"; };
 		A2721B01A2721B01A2721B01 /* SourceInference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceInference.swift; sourceTree = "<group>"; };
+		A2914B01A2914B01A2914B01 /* StallPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StallPolicy.swift; sourceTree = "<group>"; };
 		BF0C90C72B20BFD6002F99C9 /* Nativerate.sdef */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; path = Nativerate.sdef; sourceTree = "<group>"; };
 		BF0C90C92B20C163002F99C9 /* ScriptableApplicationCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptableApplicationCommand.swift; sourceTree = "<group>"; };
 		BF342D7F2E0947890032F398 /* SampleRateLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleRateLabel.swift; sourceTree = "<group>"; };
@@ -166,6 +168,7 @@
 				127C972C281FCF000087313B /* AppVersion.swift */,
 				12F1AA562868639A006C1AD8 /* DeviceMenuItem.swift */,
 				A2721B01A2721B01A2721B01 /* SourceInference.swift */,
+				A2914B01A2914B01A2914B01 /* StallPolicy.swift */,
 				BF7E0D08296336DA009FFEEC /* AudioStreamBasicDescription+Equatable.swift */,
 				BF0C90C92B20C163002F99C9 /* ScriptableApplicationCommand.swift */,
 				BF0C90C72B20BFD6002F99C9 /* Nativerate.sdef */,
@@ -291,6 +294,7 @@
 				1234F50E281E8F07007EC9F5 /* MediaTrack.swift in Sources */,
 				12F1AA572868639A006C1AD8 /* DeviceMenuItem.swift in Sources */,
 				A2721B02A2721B02A2721B02 /* SourceInference.swift in Sources */,
+				A2914B02A2914B02A2914B02 /* StallPolicy.swift in Sources */,
 				BF342D822E0948730032F398 /* MenuView.swift in Sources */,
 				1221F3FB280F1EEF003E8B77 /* OutputDevices.swift in Sources */,
 				12AA10C12E90000100C0FFEE /* LocalTrack.swift in Sources */,

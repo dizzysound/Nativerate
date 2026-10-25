@@ -315,6 +315,7 @@ final class VirtualDeviceEngine {
     private let outFormat = Atomic<Int>(0)    // packed OutFormat for B; 0 = mute
     private let formatDirty = Atomic<Int>(0)
     private let refill = Atomic<Int>(0)       // engine -> B: output silence until the ring is back at the target
+    private let trimToTarget = Atomic<Int>(0) // engine -> B: drop the oldest frames down to the target (the ring filled while the DAC stalled)
     private let dropInput = Atomic<Int>(0)    // 1: A doesn't fill the ring (inside a switch; Music is paused)  // listener -> engine: the DAC's format changed
     private var writtenFormat = AudioStreamBasicDescription()
     private var formatListener: AudioObjectPropertyListenerBlock?
@@ -2047,10 +2048,16 @@ final class VirtualDeviceEngine {
         let td = Date()
         if change {
             let target = dacFormat(r) ?? AudioStreamBasicDescription(mSampleRate: r, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 0, mBitsPerChannel: 0, mReserved: 0)
-            let ready = DeviceFormat.waitUntilReady(dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: 12, stalled: { [unowned self] in
-                guard let p = self.procB else { return }
-                self.log("  DAC keeps stopping; restarting B")
-                AudioDeviceStop(self.dac, p); AudioDeviceStart(self.dac, p)
+            // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
+            // time: playing into it dropped audio and left the ring full. Music stays paused until it settles.
+            let ready = StallPolicy.settle(first: 12, attempt: { [unowned self] timeout in
+                DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, stalled: {
+                    guard let p = self.procB else { return }
+                    self.log("  DAC keeps stopping; restarting B")
+                    AudioDeviceStop(self.dac, p); AudioDeviceStart(self.dac, p)
+                })
+            }, stillWaiting: { [unowned self] in
+                self.log("  DAC NOT ready after \(self.ms(td)): \(CA.formats(self.dacOut)); Music stays paused, waiting up to \(Int(StallPolicy.dacSettleExtraWait)) s more")
             })
             log("  DAC \(ready ? "ready" : "NOT ready") after \(ms(td)): \(CA.formats(dacOut))")
             updateOutFormat()
@@ -2269,6 +2276,12 @@ final class VirtualDeviceEngine {
             return
         }
         refillAsked = false
+        // Above twice the target the ring filled while the DAC stalled: locking on it would keep seconds of
+        // latency for good (and cut the end of the next track short), so B drops the oldest frames first.
+        if phase0 == nil, StallPolicy.shouldTrimBeforeLock(fill: ring.fill, target: targetFill, boundaryPending: marker.load(ordering: .acquiring) >= 0) {
+            log("clock: ring at \(ring.fill) frames before the lock (target \(targetFill)); dropping the oldest down to the target")
+            trimToTarget.store(1, ordering: .releasing)
+        }
         dacScalarEst = dacScalarEst == 0 ? rB : dacScalarEst + 0.1 * (rB - dacScalarEst)
         if phase0 == nil { phase0 = phase; log("clock lock: phase0 \(String(format: "%.3f", phase)), fill \(ring.fill), cycles A \(aCycles.load(ordering: .relaxed)) B \(bCycles.load(ordering: .relaxed))") }
         let err = phase - phase0!
@@ -2403,6 +2416,7 @@ final class VirtualDeviceEngine {
         default: break
         }
         if refill.exchange(0, ordering: .acquiringAndReleasing) != 0 { bPlaying = false }
+        if trimToTarget.exchange(0, ordering: .acquiringAndReleasing) != 0, marker.load(ordering: .acquiring) < 0 { ring.trim(keep: targetFill) }
         let m = marker.load(ordering: .acquiring)
         // drop only zeros: the startup backlog, and Music's silence while it isn't playing
         if (!bPlaying || trimIdle.load(ordering: .relaxed) != 0), m < 0, lastNZ.load(ordering: .acquiring) <= ring.readPos, ring.fill > targetFill {
