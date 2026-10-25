@@ -199,6 +199,8 @@ final class VirtualDeviceEngine {
     private var gridPending: (Int, Int, Int, Int, Int, Int)? // the last clean window, counted once the next is clean too
     private var gridNear = false // the verdict's depth is near its grid (rounded in the playback path), not on it
     private var lastInfoAt = Date.distantPast
+    /// A switch abandoned by a stop had paused Music that was playing: the teardown plays it again.
+    private var resumeMusicOnStop = false
     private var gridSince: Date?
     private var gridVerdict: Int? // 16, 24, or 0 = on neither grid
     // after a lossless upgrade: skip windows until one is on the 24-bit grid (Music still plays the
@@ -940,7 +942,8 @@ final class VirtualDeviceEngine {
 
     /// Every exit path: IO stopped, DAC mixable and released, scalar reset, default output restored.
     private func tearDown(restoreDefault: Bool, resumeMusic: Bool) {
-        let wasPlaying = resumeMusic && musicPlaying()
+        let wasPlaying = resumeMusic && (musicPlaying() || resumeMusicOnStop)
+        resumeMusicOnStop = false
         if wasPlaying { _ = scripts.pause(); _ = wait(1) { !self.playing } }
         if let p = procA {
             AudioDeviceStop(ls, p)
@@ -2050,7 +2053,7 @@ final class VirtualDeviceEngine {
             let target = dacFormat(r) ?? AudioStreamBasicDescription(mSampleRate: r, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 0, mBitsPerChannel: 0, mReserved: 0)
             // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
             // time: playing into it dropped audio and left the ring full. Music stays paused until it settles.
-            var watch = StallPolicy.ListenerWatch()
+            var watch = StallPolicy.ListenerWatch(startedAt: t)
             let ready = StallPolicy.settle(first: 12, cancelled: { [unowned self] in self.shouldStop }, attempt: { [unowned self] timeout in
                 DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, cancelled: {
                     self.pump() // Music's notices: the listener's play and pause during the wait
@@ -2067,7 +2070,12 @@ final class VirtualDeviceEngine {
             }, stillWaiting: { [unowned self] in
                 self.log("  DAC NOT ready after \(self.ms(td)): \(CA.formats(self.dacOut)); Music stays paused, waiting up to \(Int(StallPolicy.dacSettleExtraWait)) s more")
             })
-            if shouldStop { log("  turned off during the DAC wait; switch abandoned"); return }
+            if shouldStop {
+                // this switch paused Music; the teardown plays it again unless the listener wanted it paused
+                resumeMusicOnStop = !listenerPaused && !watch.listenerPaused
+                log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")
+                return
+            }
             if watch.listenerPaused { listenerPaused = true }
             log("  DAC \(ready ? "ready" : "NOT ready") after \(ms(td)): \(CA.formats(dacOut))")
             updateOutFormat()

@@ -48,12 +48,18 @@ check("cancelled: nothing said", said, 0)
 // the listener's play and pause while Music is held paused
 let t0 = Date(timeIntervalSinceReferenceDate: 1000)
 func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
-var w = StallPolicy.ListenerWatch()
+var w = StallPolicy.ListenerWatch(startedAt: at(0))
 check("untouched: no re-pause", w.observe(playing: false, lastNoticeAt: at(-5), now: at(1)), false)
 check("untouched: not paused by listener", w.listenerPaused, false)
 
+// the Playing that brought the switch here (before it started) is not the listener playing during it
+w = StallPolicy.ListenerWatch(startedAt: at(0))
+check("old Playing: no re-pause", w.observe(playing: true, lastNoticeAt: at(-1), now: at(0.1)), false)
+check("old Playing: its echo, then nothing", w.observe(playing: false, lastNoticeAt: at(0.05), now: at(0.2)), false)
+check("old Playing: not a play", w.listenerPaused, false)
+
 // play: paused again once, not on every poll; the echo of our pause is not a listener pause
-w = StallPolicy.ListenerWatch()
+w = StallPolicy.ListenerWatch(startedAt: at(0))
 check("play: paused again", w.observe(playing: true, lastNoticeAt: at(10), now: at(10)), true)
 check("play: not again at once", w.observe(playing: true, lastNoticeAt: at(10), now: at(10.01)), false)
 check("play: echo", w.observe(playing: false, lastNoticeAt: at(10.2), now: at(10.3)), false)
@@ -67,6 +73,22 @@ check("pause after play: listener paused", w.listenerPaused, true)
 // play again after that: wants playback again
 check("play again", w.observe(playing: true, lastNoticeAt: at(30), now: at(30)), true)
 check("play again: plays at the end", w.listenerPaused, false)
+
+// play, our pause, its echo, and the listener's pause inside the echo window of our pause (re-review)
+w = StallPolicy.ListenerWatch(startedAt: at(0))
+check("quick pause: paused again", w.observe(playing: true, lastNoticeAt: at(10), now: at(10.02)), true)
+check("quick pause: our echo", w.observe(playing: false, lastNoticeAt: at(10.1), now: at(10.15)), false)
+check("quick pause: still ours", w.listenerPaused, false)
+check("quick pause: listener's pause", w.observe(playing: false, lastNoticeAt: at(10.6), now: at(10.65)), false)
+check("quick pause: listener paused", w.listenerPaused, true)
+check("quick pause: stays so on later polls", w.observe(playing: false, lastNoticeAt: at(10.6), now: at(13)) == false && w.listenerPaused, true)
+
+// the switch's own pause echoes after the listener's play: both echoes are ours
+w = StallPolicy.ListenerWatch(startedAt: at(0))
+check("two echoes: play", w.observe(playing: true, lastNoticeAt: at(0.1), now: at(0.12)), true)
+check("two echoes: switch's echo", w.observe(playing: false, lastNoticeAt: at(0.2), now: at(0.22)), false)
+check("two echoes: re-pause's echo", w.observe(playing: false, lastNoticeAt: at(0.25), now: at(0.27)), false)
+check("two echoes: not a listener pause", w.listenerPaused, false)
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")

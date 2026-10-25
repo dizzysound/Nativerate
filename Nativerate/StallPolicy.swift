@@ -24,23 +24,44 @@ enum StallPolicy {
     /// Music's state while a switch holds it paused: the wait is up to 102 s now, so the listener can press
     /// play and pause meanwhile. A play is paused again (it would play into the stalled DAC and move the
     /// position the rewind is measured from); a pause after a play means the listener wants it paused.
+    /// Each pause of ours (the switch's own, and every re-pause) is expected to echo back as one Paused
+    /// notice within the echo window; a Paused notice beyond those is the listener's, however soon it comes.
     struct ListenerWatch {
         static let echoWindow: TimeInterval = 1.5 // our own pause echoes back as a Paused notice this late
         private var played = false
         private var pausedAfter = false
-        private var echoUntil = Date.distantPast
+        private var echoes = 1 // the switch's own pause, issued just before the wait
+        private let startedAt: Date
+        private var echoUntil: Date
+        private var repauseAt = Date.distantPast
+        private var seenNotice = Date.distantPast
+
+        init(startedAt: Date) {
+            self.startedAt = startedAt
+            echoUntil = startedAt.addingTimeInterval(Self.echoWindow)
+        }
 
         /// True when Music must be paused again now.
         mutating func observe(playing: Bool, lastNoticeAt: Date, now: Date) -> Bool {
-            if playing {
-                played = true
-                pausedAfter = false
-                guard now >= echoUntil else { return false }
-                echoUntil = now.addingTimeInterval(Self.echoWindow)
-                return true
+            if now > echoUntil { echoes = 0 }
+            // a notice from before the switch is not news (the Playing that brought us here)
+            guard lastNoticeAt > startedAt else { return false }
+            if lastNoticeAt != seenNotice {
+                seenNotice = lastNoticeAt
+                if playing {
+                    played = true
+                    pausedAfter = false
+                } else if echoes > 0 {
+                    echoes -= 1
+                } else if played {
+                    pausedAfter = true
+                }
             }
-            if played, lastNoticeAt > echoUntil { pausedAfter = true }
-            return false
+            guard playing, now >= repauseAt else { return false }
+            echoes += 1
+            echoUntil = now.addingTimeInterval(Self.echoWindow)
+            repauseAt = echoUntil
+            return true
         }
 
         var listenerPaused: Bool { played && pausedAfter }
