@@ -483,6 +483,7 @@ final class VirtualDeviceEngine {
     private var shouldStop: Bool { inboxLock.lock(); defer { inboxLock.unlock() }; return stopRequested }
 
     private func run() {
+        defer { othersBuild.abandon() } // every exit: a player still being built has no loop left to take it
         log.start()
         log("engine started (virtual device)")
         if let note = UserDefaults.standard.string(forKey: Self.recoveryNoteKey) {
@@ -517,6 +518,7 @@ final class VirtualDeviceEngine {
         // first Playing of the track already playing a "resume" that skips the rate decision.
         dropInput.store(0, ordering: .releasing); lastTrackID = nil; trackRate = nil
         guard setUp() else {
+            othersBuild.abandon() // setUp can fail after it launched the player; nothing takes it while idle
             log("setup failed; engine idle until it is turned off")
             while !shouldStop { Thread.sleep(forTimeInterval: 0.1) }
             log.close()
@@ -585,7 +587,6 @@ final class VirtualDeviceEngine {
             Thread.sleep(forTimeInterval: 0.01)
         }
         tearDown(restoreDefault: true, resumeMusic: true)
-        othersBuild.abandon()
         MusicSettingsCheck.shared.clear()
         recorder?.finish()
         log("engine stopped")
@@ -1171,20 +1172,25 @@ final class VirtualDeviceEngine {
     private func launchOthers() {
         let d = othersDevice, r = curRate
         others.stop()
+        let player = others
+        // refused while an abandoned start is still hung in CoreAudio (see BackgroundStart.begin); collectOthers asks again
+        guard othersBuild.begin({ [weak self] in
+            player.prepare(device: d, rate: r, log: { self?.log($0) })
+        }, orphan: { player.discardLate($0) }) else { return }
         othersLaunched = (d, r)
         othersLaunchedAt = Date(); othersSlowLogged = false
-        let player = others
-        othersBuild.begin({ [weak self] in
-            player.prepare(device: d, rate: r, log: { self?.log($0) })
-        }, orphan: { player.discardLate($0) })
     }
 
     /// Engine thread, every 0.5 s: takes over the player the background start built.
     private func collectOthers() {
         guard let built = othersBuild.take() else {
-            if othersBuild.isBusy, !othersSlowLogged, Date().timeIntervalSince(othersLaunchedAt) >= 10 {
-                othersSlowLogged = true
-                log("other apps: the player is still starting after 10 s (CoreAudio isn't answering); Music does not wait for it")
+            if othersBuild.isBusy {
+                if !othersSlowLogged, Date().timeIntervalSince(othersLaunchedAt) >= 10 {
+                    othersSlowLogged = true
+                    log("other apps: the player is still starting after 10 s (CoreAudio isn't answering); Music does not wait for it")
+                }
+            } else if othersDone != nil, othersDevice != 0 {
+                launchOthers() // the start asked for was refused: an earlier run's start is still hung
             }
             return
         }

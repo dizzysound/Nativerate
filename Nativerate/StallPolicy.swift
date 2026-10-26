@@ -93,6 +93,7 @@ enum StallPolicy {
 final class BackgroundStart<Output>: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false
+    private var worker = false // a `work` call has not returned (and its orphan hand-over has not finished)
     private var output: Output??
     private var generation = 0
     private var orphan: ((Output) -> Void)?
@@ -100,22 +101,26 @@ final class BackgroundStart<Output>: @unchecked Sendable {
     /// A start is running, or its result has not been taken yet.
     var isBusy: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
-    /// False (and `work` not run) if a start is already busy. `orphan` gets the result if nobody takes it
-    /// (see `abandon`), so a late success is shut down instead of left running.
+    /// False (and `work` not run) if a start is already busy, or an abandoned start's `work` is still hung:
+    /// two `work` calls never overlap, so the player they share (ring, render state) has one live reader.
+    /// `orphan` gets the result if nobody takes it (see `abandon`), so a late success is shut down instead
+    /// of left running.
     @discardableResult
     func begin(_ work: @escaping () -> Output?, orphan: @escaping (Output) -> Void = { _ in }) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard !running else { return false }
-        running = true; output = nil; generation += 1; self.orphan = orphan
+        guard !running, !worker else { return false }
+        running = true; worker = true; output = nil; generation += 1; self.orphan = orphan
         let mine = generation
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let r = work()
             lock.lock()
             let wanted = mine == generation
-            if wanted { output = .some(r) }
+            if wanted { output = .some(r); worker = false }
             let handler = orphan
             lock.unlock()
-            if !wanted, let r { handler(r) }
+            guard !wanted else { return }
+            if let r { handler(r) }
+            lock.lock(); worker = false; lock.unlock()
         }
         return true
     }
@@ -129,15 +134,18 @@ final class BackgroundStart<Output>: @unchecked Sendable {
     }
 
     /// Nobody will take the current start's result (the engine loop is ending): a result already waiting,
-    /// or one that arrives later, goes to `orphan`. The start is free again at once.
+    /// or one that arrives later, goes to `orphan`. `isBusy` is false at once; `begin` is accepted again
+    /// once the abandoned `work` has returned.
     func abandon() {
         lock.lock()
         guard running else { lock.unlock(); return }
         generation += 1; running = false
         let waiting = output.flatMap { $0 }
+        let waited = output != nil
         output = nil
         let handler = orphan
         lock.unlock()
         if let waiting { handler?(waiting) }
+        if waited { lock.lock(); worker = false; lock.unlock() }
     }
 }

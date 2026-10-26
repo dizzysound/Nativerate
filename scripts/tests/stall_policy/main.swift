@@ -233,18 +233,34 @@ _ = failedLate.begin({ failRelease.wait(); return nil }, orphan: note)
 failedLate.abandon(); failRelease.signal(); Thread.sleep(forTimeInterval: 0.2)
 check("abandon: a failed start orphans nothing", seen(), [5, 6])
 
+// restart while the abandoned start's work is still hung: no second work overlaps the first
 let reused = BackgroundStart<Int>()
 let reusedRelease = DispatchSemaphore(value: 0)
-_ = reused.begin({ reusedRelease.wait(); return 8 }, orphan: note)
+let live = NSLock(); var running = 0, maxRunning = 0
+func enter() { live.lock(); running += 1; maxRunning = max(maxRunning, running); live.unlock() }
+func leave() { live.lock(); running -= 1; live.unlock() }
+_ = reused.begin({ enter(); reusedRelease.wait(); leave(); return 8 }, orphan: note)
 reused.abandon()
-check("abandon: a new start is accepted", reused.begin({ 9 }, orphan: note), true)
+check("abandon: a new start is refused while the old work still hangs", reused.begin({ enter(); defer { leave() }; return 9 }, orphan: note), false)
+check("abandon: refused begin ran nothing", reused.isBusy, false)
+reusedRelease.signal()
+waitFor { seen().contains(8) }
+check("abandon: old start's result orphaned, not taken", seen(), [5, 6, 8])
+var accepted = false
+waitFor { accepted = reused.begin({ enter(); defer { leave() }; return 9 }, orphan: note); return accepted }
+check("abandon: a new start is accepted once the old work returned", accepted, true)
 var gotReused: Int?? = nil
 waitFor { gotReused = reused.take(); return gotReused != nil }
 check("abandon: new start's result is taken", gotReused == .some(.some(9)), true)
-reusedRelease.signal()
-waitFor { seen().contains(8) }
-check("abandon: old start's result still orphaned, not taken", seen(), [5, 6, 8])
+check("abandon: never two works at once", maxRunning, 1)
 check("abandon: nothing stale to take", reused.take() == nil, true)
+
+// the abandoned result was waiting when the engine restarts: the next start is accepted at once
+let waitedThenReused = BackgroundStart<Int>()
+_ = waitedThenReused.begin({ 10 }, orphan: note)
+Thread.sleep(forTimeInterval: 0.2)
+waitedThenReused.abandon()
+check("abandon: a start is accepted after a waiting result was orphaned", waitedThenReused.begin({ 11 }, orphan: note), true)
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
