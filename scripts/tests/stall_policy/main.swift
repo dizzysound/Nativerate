@@ -176,7 +176,7 @@ check("poll finds playing: listener wants it playing", w.listenerPaused, false)
 w = watch()
 check("final: nothing pending, still a script", look(&w, [], now: 9, prior: "paused", final: true), true)
 check("final: Music paused, not the listener's", w.listenerPaused, false)
-check("final: pending Playing, script", look(&w, [(playing: true, at: 9.5)], now: 9.6, prior: "paused", final: true), true)
+check("final: pending Playing, script", look(&w, [(playing: true, at: 12)], now: 12.1, prior: "paused", final: true), true)
 check("final: the listener paused", w.listenerPaused, true)
 w = watch()
 look(&w, [(playing: true, at: 9)], now: 9.01, prior: nil) // failed
