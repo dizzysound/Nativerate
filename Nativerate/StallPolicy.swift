@@ -24,58 +24,58 @@ enum StallPolicy {
     /// Music's state while a switch holds it paused: the wait is up to 102 s now, so the listener can press
     /// play and pause meanwhile. A play is paused again (it would play into the stalled DAC and move the
     /// position the rewind is measured from); a pause after a play means the listener wants it paused.
-    /// Each pause of ours (the switch's own, and every re-pause) is expected to echo back as one Paused
-    /// notice; a Paused notice beyond those is the listener's, however soon or late it comes. Music posts its
-    /// notices in the order its state changes, so an echo comes before any later Playing: a Playing that
-    /// follows a pause finds no echo still due (that pause changed nothing), and the Paused after it is the
-    /// listener's.
+    ///
+    /// Only a Playing is certainly the listener's. A Paused is ours when it is the echo of a pause the engine
+    /// sent that changed Music's state (`ownPause`), and the listener's otherwise. At most one echo is due:
+    /// a later pause that took effect means the earlier one did not. An echo cannot arrive before its
+    /// command went out, and Music posts its notices in order, so a Playing that arrives after the command
+    /// returned finds the echo already delivered; if it is still due, none was posted and it is dropped.
+    /// A listener's pause needs a Playing before it, so a dropped or stale echo never swallows one.
     struct ListenerWatch {
         static let repauseInterval: TimeInterval = 1.5 // a re-pause that has not taken effect is asked again after this
+        private static let deliverySlack: TimeInterval = 0.25 // a Playing this soon after a command may still have been posted before it ran
         private var played = false
         private var pausedAfter = false
         private var lastPlaying = false // the last notice since the switch began
-        private var echoes: Int // the switch's own pause, if Music was playing for it to pause
+        private var echo: (from: Date, to: Date)? // the command whose Paused notice is still due
         private var pausedAtStart: Bool // the listener had already paused before the switch began
         private let startedAt: Date
         private var repauseAt = Date.distantPast
 
         /// `pausedAtStart`: Music was already paused by the listener when the switch began; a later play
-        /// replaces that. `ownPauseEchoes`: false when Music was already paused, so the switch's pause
-        /// changes nothing and may post no notice that a listener pause could be mistaken for.
-        init(startedAt: Date, pausedAtStart: Bool = false, ownPauseEchoes: Bool = true) {
+        /// replaces that.
+        init(startedAt: Date, pausedAtStart: Bool = false) {
             self.startedAt = startedAt
             self.pausedAtStart = pausedAtStart
-            echoes = ownPauseEchoes ? 1 : 0
+        }
+
+        /// A pause the engine sent, from `from` to `to`. `tookEffect`: Music was playing and is paused now;
+        /// only then is an echo due (a pause of an already paused Music may post none).
+        mutating func ownPause(from: Date, to: Date, tookEffect: Bool) {
+            if tookEffect { echo = (from, to) }
         }
 
         /// `notices`: every Music notice since the last call, in order (a play and a pause can arrive together).
-        /// True when Music must be paused again now.
+        /// True when Music is playing and must be paused again now; report that pause with `ownPause`.
         mutating func observe(notices: [(playing: Bool, at: Date)], now: Date) -> Bool {
             for n in notices {
                 // a notice from before the switch is not news (the Playing that brought us here)
                 guard n.at > startedAt else { continue }
                 defer { lastPlaying = n.playing }
                 if n.playing {
-                    if !lastPlaying { echoes = 0 }
+                    if let e = echo, n.at > e.to.addingTimeInterval(Self.deliverySlack) { echo = nil }
                     played = true
                     pausedAtStart = false
                     pausedAfter = false
-                } else if echoes > 0 {
-                    echoes -= 1
+                } else if let e = echo, n.at >= e.from {
+                    echo = nil
                 } else if played {
                     pausedAfter = true
                 }
             }
             guard lastPlaying, now >= repauseAt else { return false }
-            echoes += 1
             repauseAt = now.addingTimeInterval(Self.repauseInterval)
             return true
-        }
-
-        /// The re-pause that `observe` asked for found Music already paused (the listener's pause is on its
-        /// way): it posts no echo, so its credit must not swallow that pause.
-        mutating func repauseFoundPaused() {
-            echoes = max(0, echoes - 1)
         }
 
         var listenerPaused: Bool { pausedAtStart || (played && pausedAfter) }

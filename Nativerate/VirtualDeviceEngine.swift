@@ -2041,9 +2041,11 @@ final class VirtualDeviceEngine {
         noticeTap = []
         defer { noticeTap = nil }
         let pausedAtStart = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
+        var watch = StallPolicy.ListenerWatch(startedAt: t, pausedAtStart: pausedAtStart)
         // pausing a Music that is already paused (the caller's pause, the listener's) may post no notice
-        var watch = StallPolicy.ListenerWatch(startedAt: t, pausedAtStart: pausedAtStart, ownPauseEchoes: pausedAt == nil && !pausedAtStart)
-        _ = scripts.pause()
+        let pauseFrom = Date()
+        let paused = scripts.pause()
+        watch.ownPause(from: pauseFrom, to: Date(), tookEffect: paused && pausedAt == nil && !pausedAtStart)
         var m = marker.load(ordering: .acquiring)
         // a new track reported late (a skip): the gap before it, if B hasn't played it yet
         let retro = m < 0 && newTrack ? retroGap() : nil
@@ -2072,9 +2074,11 @@ final class VirtualDeviceEngine {
                         let state = self.scripts.playerState()
                         if state == nil || state == "playing" {
                             self.log("  Music playing during the DAC wait; paused again")
-                            _ = self.scripts.pause()
-                        } else {
-                            watch.repauseFoundPaused()
+                            let from = Date()
+                            let ok = self.scripts.pause()
+                            let to = Date()
+                            // an echo is due only if Music is paused now (the listener's pause may be what did it)
+                            watch.ownPause(from: from, to: to, tookEffect: ok && self.scripts.playerState() == "paused")
                         }
                     }
                     return self.shouldStop
