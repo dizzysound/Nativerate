@@ -25,16 +25,18 @@ enum StallPolicy {
     /// play and pause meanwhile. A play is paused again (it would play into the stalled DAC and move the
     /// position the rewind is measured from); a pause after a play means the listener wants it paused.
     /// Each pause of ours (the switch's own, and every re-pause) is expected to echo back as one Paused
-    /// notice within the echo window; a Paused notice beyond those is the listener's, however soon it comes.
+    /// notice; a Paused notice beyond those is the listener's, however soon or late it comes. Music posts its
+    /// notices in the order its state changes, so an echo comes before any later Playing: a Playing that
+    /// follows a pause finds no echo still due (that pause changed nothing), and the Paused after it is the
+    /// listener's.
     struct ListenerWatch {
-        static let echoWindow: TimeInterval = 1.5 // our own pause echoes back as a Paused notice this late
+        static let repauseInterval: TimeInterval = 1.5 // a re-pause that has not taken effect is asked again after this
         private var played = false
         private var pausedAfter = false
         private var lastPlaying = false // the last notice since the switch began
         private var echoes: Int // the switch's own pause, if Music was playing for it to pause
         private var pausedAtStart: Bool // the listener had already paused before the switch began
         private let startedAt: Date
-        private var echoUntil: Date
         private var repauseAt = Date.distantPast
 
         /// `pausedAtStart`: Music was already paused by the listener when the switch began; a later play
@@ -44,7 +46,6 @@ enum StallPolicy {
             self.startedAt = startedAt
             self.pausedAtStart = pausedAtStart
             echoes = ownPauseEchoes ? 1 : 0
-            echoUntil = startedAt.addingTimeInterval(Self.echoWindow)
         }
 
         /// `notices`: every Music notice since the last call, in order (a play and a pause can arrive together).
@@ -53,9 +54,9 @@ enum StallPolicy {
             for n in notices {
                 // a notice from before the switch is not news (the Playing that brought us here)
                 guard n.at > startedAt else { continue }
-                if n.at > echoUntil { echoes = 0 }
-                lastPlaying = n.playing
+                defer { lastPlaying = n.playing }
                 if n.playing {
+                    if !lastPlaying { echoes = 0 }
                     played = true
                     pausedAtStart = false
                     pausedAfter = false
@@ -65,11 +66,9 @@ enum StallPolicy {
                     pausedAfter = true
                 }
             }
-            if now > echoUntil { echoes = 0 }
             guard lastPlaying, now >= repauseAt else { return false }
             echoes += 1
-            echoUntil = now.addingTimeInterval(Self.echoWindow)
-            repauseAt = echoUntil
+            repauseAt = now.addingTimeInterval(Self.repauseInterval)
             return true
         }
 
