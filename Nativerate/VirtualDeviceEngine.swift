@@ -140,8 +140,9 @@ final class VirtualDeviceEngine {
 
     // main thread
     private var observer: NSObjectProtocol?
-    private var thread: Thread?
-    private var finished: DispatchSemaphore?
+    private var slot = EngineSlot()        // taken from start() until the engine thread's end is seen
+    private var finished: DispatchGroup?   // left when the engine thread ends; can be waited on more than once
+    private var generation = 0             // which start() a thread belongs to
 
     // inbox, under inboxLock: main thread / log reader -> engine thread
     private let inboxLock = NSLock()
@@ -351,10 +352,17 @@ final class VirtualDeviceEngine {
 
     // MARK: - Lifecycle (main thread)
 
-    var isRunning: Bool { thread != nil }
+    var isRunning: Bool { slot.occupied }
 
     func start() {
-        guard thread == nil else { return }
+        if slot.occupied, finished?.wait(timeout: .now()) == .success { _ = slot.ended(); finished = nil }
+        switch slot.requestStart() {
+        case .running: return
+        case .deferred:
+            print("[Exclusive Mode] virtual-device engine: the previous engine thread is still ending; the start waits for it")
+            return
+        case .begin: break
+        }
         print("[Exclusive Mode] virtual-device engine: start requested")
         inboxLock.lock(); stopRequested = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
         observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
@@ -362,29 +370,44 @@ final class VirtualDeviceEngine {
             self.inboxLock.lock(); self.infoInbox.append((Date(), note.userInfo ?? [:])); self.inboxLock.unlock()
         }
         startDecoderLog()
-        let done = DispatchSemaphore(value: 0)
+        let done = DispatchGroup()
+        done.enter()
         finished = done
+        generation += 1
+        let gen = generation
         let t = Thread { [weak self] in
             self?.run()
-            done.signal()
+            done.leave()
+            DispatchQueue.main.async { self?.threadEnded(gen) }
         }
         t.name = "RendererEngine (virtual device)"
         t.qualityOfService = .userInitiated
-        thread = t
         t.start()
     }
 
+    /// Main thread: a thread that ended after its stop() gave up waiting frees the slot, and runs the start
+    /// that was refused meanwhile. A stop() that did see the end, or a newer start(), has already moved on.
+    private func threadEnded(_ gen: Int) {
+        guard gen == generation, slot.occupied else { return }
+        finished = nil
+        if slot.ended() { start() }
+    }
+
     /// Stops the IO, gives the DAC back (mixable, hog released) and restores the default output.
-    /// Waits for a switch in progress (up to 20 s).
+    /// Waits for a switch in progress (up to 20 s). If the thread is still alive then, the output is
+    /// recovered anyway but the slot stays taken, so a start() cannot run a second loop beside it.
     func stop() {
-        guard thread != nil else { return }
+        guard slot.occupied else { return }
+        let wait = slot.requestStop()
         inboxLock.lock(); stopRequested = true; inboxLock.unlock()
-        if finished?.wait(timeout: .now() + 20) == .timedOut {
-            print("[Exclusive Mode] engine thread did not stop within 20 s")
+        if finished?.wait(timeout: wait ? .now() + 20 : .now()) == .success {
+            _ = slot.ended()
+            finished = nil
+        } else if wait {
+            print("[Exclusive Mode] engine thread did not stop within 20 s; a new start waits for it")
+            slot.stopTimedOut()
             Self.recoverOutput()
         }
-        thread = nil
-        finished = nil
         if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
         observer = nil
         inboxLock.lock(); let old = logProcess; logProcess = nil; inboxLock.unlock()
