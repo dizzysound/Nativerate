@@ -996,7 +996,7 @@ final class VirtualDeviceEngine {
             // the restore above takes seconds: a listener Stop or quit meanwhile is not overridden
             if resumeOnlyIfPaused, !(musicRunning() && scripts.playerState() == "paused") {
                 log("Music was stopped during the teardown; not playing it again")
-            } else { playChecked() }
+            } else { playChecked(onlyIfPaused: resumeOnlyIfPaused) }
         }
     }
 
@@ -1029,8 +1029,13 @@ final class VirtualDeviceEngine {
     /// Asks Music, not the notices: they can arrive seconds late and in a burst (Executor,
     /// 2026-10-03), so `playing` still read false after Music had started, the retries went on, and
     /// the next one undid the listener's pause.
-    private func playChecked() {
+    private func playChecked(onlyIfPaused: Bool = false) {
         for attempt in 1...4 {
+            // a retry must not override a listener Stop or quit that came during the wait
+            if onlyIfPaused, attempt > 1, !(musicRunning() && scripts.playerState() == "paused") {
+                log("Music was stopped during the play retries; not playing it again")
+                return
+            }
             _ = scripts.play()
             if wait(2, until: { self.scripts.playerState() == "playing" }) { return }
             log("play attempt \(attempt): Music isn't playing")
