@@ -7,3 +7,5 @@ xcrun swiftc -o "$out/source_inference" ../../Nativerate/SourceInference.swift s
 "$out/source_inference"
 xcrun swiftc -o "$out/stall_policy" ../../Nativerate/StallPolicy.swift stall_policy/main.swift
 "$out/stall_policy"
+xcrun swiftc -o "$out/engine_slot" ../../Nativerate/EngineSlot.swift engine_slot/main.swift
+"$out/engine_slot"
