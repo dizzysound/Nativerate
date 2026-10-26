@@ -148,6 +148,8 @@ final class VirtualDeviceEngine {
     private var infoInbox: [(Date, [AnyHashable: Any])] = []
     private var lineInbox: [(Date, String)] = []
     private var stopRequested = false
+    private var stopAbandoned = false     // stop() gave up waiting for the thread and restored the output itself
+    private var pausedBySwitchAtStop = false  // engine thread only: a switch left Music paused when stop() came
     private var logProcess: Process?       // the `log stream` that feeds lineInbox
     private var logProcessStart = Date()
     private var lastStreamLineAt: Date?    // when the stream last delivered a line
@@ -199,8 +201,6 @@ final class VirtualDeviceEngine {
     private var gridPending: (Int, Int, Int, Int, Int, Int)? // the last clean window, counted once the next is clean too
     private var gridNear = false // the verdict's depth is near its grid (rounded in the playback path), not on it
     private var lastInfoAt = Date.distantPast
-    /// A switch abandoned by a stop had paused Music that was playing: the teardown plays it again.
-    private var resumeMusicOnStop = false
     /// Music's play/pause notices in arrival order, collected while a switch waits for the DAC.
     private var noticeTap: [(playing: Bool, at: Date)]?
     private var gridSince: Date?
@@ -366,7 +366,7 @@ final class VirtualDeviceEngine {
     func start() {
         guard thread == nil else { return }
         print("[Exclusive Mode] virtual-device engine: start requested")
-        inboxLock.lock(); stopRequested = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
+        inboxLock.lock(); stopRequested = false; stopAbandoned = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
         observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             self.inboxLock.lock(); self.infoInbox.append((Date(), note.userInfo ?? [:])); self.inboxLock.unlock()
@@ -391,6 +391,7 @@ final class VirtualDeviceEngine {
         inboxLock.lock(); stopRequested = true; inboxLock.unlock()
         if finished?.wait(timeout: .now() + 20) == .timedOut {
             print("[Exclusive Mode] engine thread did not stop within 20 s")
+            inboxLock.lock(); stopAbandoned = true; inboxLock.unlock()
             Self.recoverOutput()
         }
         thread = nil
@@ -951,8 +952,13 @@ final class VirtualDeviceEngine {
 
     /// Every exit path: IO stopped, DAC mixable and released, scalar reset, default output restored.
     private func tearDown(restoreDefault: Bool, resumeMusic: Bool) {
-        let wasPlaying = resumeMusic && (musicPlaying() || (resumeMusicOnStop && musicRunning()))
-        resumeMusicOnStop = false
+        // a switch's pause is resumed only while Music is still paused: stopped or quit since means the listener ended it
+        let pausedBySwitch = pausedBySwitchAtStop && musicRunning() && scripts.playerState() == "paused"
+        let playingAtEntry = musicPlaying()
+        let wasPlaying = resumeMusic && (playingAtEntry || pausedBySwitch)
+        // Music was already paused here, only the switch's pause is ours: re-check right before the play
+        let resumeOnlyIfPaused = !playingAtEntry && pausedBySwitch
+        pausedBySwitchAtStop = false
         if wasPlaying { _ = scripts.pause(); _ = wait(1) { !self.playing } }
         if let p = procA {
             AudioDeviceStop(ls, p)
@@ -996,7 +1002,12 @@ final class VirtualDeviceEngine {
             attach(false)
             UserDefaults.standard.removeObject(forKey: Self.ownsOutputKey)
         }
-        if wasPlaying { playChecked() }
+        if wasPlaying {
+            // the restore above takes seconds: a listener Stop or quit meanwhile is not overridden
+            if resumeOnlyIfPaused, !(musicRunning() && scripts.playerState() == "paused") {
+                log("Music was stopped during the teardown; not playing it again")
+            } else { playChecked(onlyIfPaused: resumeOnlyIfPaused) }
+        }
     }
 
     /// True with plug-in 1.0 (no 'LSac': nothing to lose).
@@ -1028,8 +1039,13 @@ final class VirtualDeviceEngine {
     /// Asks Music, not the notices: they can arrive seconds late and in a burst (Executor,
     /// 2026-10-03), so `playing` still read false after Music had started, the retries went on, and
     /// the next one undid the listener's pause.
-    private func playChecked() {
+    private func playChecked(onlyIfPaused: Bool = false) {
         for attempt in 1...4 {
+            // a retry must not override a listener Stop or quit that came during the wait
+            if onlyIfPaused, attempt > 1, !(musicRunning() && scripts.playerState() == "paused") {
+                log("Music was stopped during the play retries; not playing it again")
+                return
+            }
             _ = scripts.play()
             if wait(2, until: { self.scripts.playerState() == "playing" }) { return }
             log("play attempt \(attempt): Music isn't playing")
@@ -2153,8 +2169,8 @@ final class VirtualDeviceEngine {
             if shouldStop {
                 holdMusicPaused(&watch, final: true)
                 // this switch paused Music; the teardown plays it again unless the listener wanted it paused
-                resumeMusicOnStop = !watch.listenerPaused && musicRunning()
-                log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")
+                pausedBySwitchAtStop = !watch.listenerPaused
+                log("  turned off during the DAC wait; switch abandoned\(pausedBySwitchAtStop ? "; Music plays again after the stop" : "")")
                 return
             }
             log("  DAC \(ready ? "ready" : "NOT ready") after \(ms(td)): \(CA.formats(dacOut))")
@@ -2169,16 +2185,19 @@ final class VirtualDeviceEngine {
         pump()
         holdMusicPaused(&watch, final: true)
         let listenerPaused = watch.listenerPaused
+        // stop() waits 20 s for this thread and then restores the output itself; a switch that was
+        // blocked in CoreAudio past that must not pick the virtual output and play Music again
+        if stoppedDuringSwitch(musicPaused: !listenerPaused) { return }
         if !listenerPaused && !musicRunning() {
             // the engine's own quit check is off during a switch; Music asked to play now would be relaunched
-            reclaimDefault()
+            _ = reclaimDefaultUnlessStopped(musicPaused: false)
             log("  Music quit during the switch: not played again; switch \(switches) done \(ms(t)) after the request")
             return
         }
         if listenerPaused {
             // as the play path does: the device poll would take a default moved during the switch
             // for the listener's pick and follow it
-            reclaimDefault()
+            if !reclaimDefaultUnlessStopped(musicPaused: false) { return }
             log("  Music was paused by the listener (before or during the switch): stays paused; switch \(switches) done \(ms(t)) after the request")
             return
         }
@@ -2196,12 +2215,35 @@ final class VirtualDeviceEngine {
         // scales with it. 0.001 is a real seek (resumed at 1.4 ms on the bench).
         if startPos < 2 { startPos = 0.001 }
         _ = scripts.setPosition(startPos)
-        reclaimDefault() // never let Music start on whatever coreaudiod fell back to
+        // never let Music start on whatever coreaudiod fell back to
+        if !reclaimDefaultUnlessStopped(musicPaused: true) { return }
         _ = scripts.play()
         // the play re-creates this track's decoder: that line is its own, not a next track's
         ownLinesUntil = max(ownLinesUntil ?? .distantPast, Date().addingTimeInterval(1))
         log("  rewound to \(String(format: "%.3f", startPos)) (was \(String(format: "%.3f", pos)), played ~\(String(format: "%.3f", played)) s), play; switch \(switches) done \(ms(t)) after the request")
         confirmPlaying()
+    }
+
+    /// The engine was turned off while a switch ran. Music was paused by the switch: the teardown plays it again.
+    private func stoppedDuringSwitch(musicPaused: Bool) -> Bool {
+        guard shouldStop else { return false }
+        if musicPaused { pausedBySwitchAtStop = true }
+        log("  turned off during the switch; not selecting the virtual device or playing Music again")
+        return true
+    }
+
+    /// reclaimDefault() for a switch; false when the engine was turned off before or during it. The check cannot
+    /// cover a CoreAudio call already in flight: if stop() gave up on this thread and restored the output, a
+    /// selection that lands after that is undone here (otherwise the teardown does it, once it runs).
+    private func reclaimDefaultUnlessStopped(musicPaused: Bool) -> Bool {
+        if stoppedDuringSwitch(musicPaused: musicPaused) { return false }
+        reclaimDefault()
+        guard shouldStop else { return true }
+        if musicPaused { pausedBySwitchAtStop = true }
+        inboxLock.lock(); let abandoned = stopAbandoned; inboxLock.unlock()
+        log("  turned off while the virtual device was being selected; \(abandoned ? "restoring the output" : "the teardown restores it")")
+        if abandoned { Self.recoverOutput() }
+        return false
     }
 
     /// Music can end up paused after the switch's play: its late notices from our own pause arrive after
