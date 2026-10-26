@@ -41,16 +41,18 @@ enum StallPolicy {
         private var commandEnd = Date.distantPast // a Playing from before this was covered by the last pause command
         private var playPending = false
         private var commanded = false // a pause script has run
+        private var callerPaused = false // a caller of the switch paused Music before it started
         private var nextRepause = Date.distantPast
         private var nextPoll = Date.distantPast
         private(set) var listenerPaused = false
 
         /// `notices`: every Music notice since the last call. True when the engine must run its pause
         /// script now (a Playing arrived, or it is time to look), then report it with `pauseSent`.
-        /// `final`: the last look before Music is played again: only a pending Playing asks for one.
+        /// `final`: the last look before Music is played again: always asks, so a play whose Playing notice
+        /// was missed (the engine waits without looking) is found from the state.
         mutating func observe(notices: [(playing: Bool, at: Date)], now: Date, final: Bool = false) -> Bool {
             for n in notices where n.playing && n.at > commandEnd { playPending = true }
-            let due = playPending ? final || now >= nextRepause : !final && now >= nextPoll
+            let due = final || (playPending ? now >= nextRepause : now >= nextPoll)
             if due {
                 nextRepause = now.addingTimeInterval(Self.repauseInterval)
                 nextPoll = now.addingTimeInterval(Self.pollInterval)
@@ -62,11 +64,12 @@ enum StallPolicy {
         /// `to` when it returned. `byCaller`: a caller of the switch had paused Music already, so a paused
         /// state at the first command is not the listener's.
         mutating func pauseSent(prior: String?, to: Date, byCaller: Bool = false) {
+            if byCaller { callerPaused = true } // kept if this script failed: a later first look must not blame the listener
             guard let prior else { return } // no news: a pending Playing stays pending
             commandEnd = to
             if Self.wasPlaying(prior) {
                 listenerPaused = false
-            } else if playPending || !commanded && !byCaller {
+            } else if playPending || !commanded && !callerPaused {
                 listenerPaused = true
             }
             playPending = false

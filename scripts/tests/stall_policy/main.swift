@@ -149,15 +149,32 @@ w = watch()
 check("poll finds playing: script runs", look(&w, [], now: 3, prior: "playing"), true)
 check("poll finds playing: listener wants it playing", w.listenerPaused, false)
 
-// last look before Music is played: only a pending Playing asks for a script, and the throttle is off
+// last look before Music is played: always a script, the throttle is off
 w = watch()
-check("final: nothing pending, no script", look(&w, [], now: 9, prior: "playing", final: true), false)
+check("final: nothing pending, still a script", look(&w, [], now: 9, prior: "paused", final: true), true)
+check("final: Music paused, not the listener's", w.listenerPaused, false)
 check("final: pending Playing, script", look(&w, [(playing: true, at: 9.5)], now: 9.6, prior: "paused", final: true), true)
 check("final: the listener paused", w.listenerPaused, true)
 w = watch()
 look(&w, [(playing: true, at: 9)], now: 9.01, prior: nil) // failed
 check("final: pending after a failure, inside the interval", look(&w, [], now: 9.2, prior: "playing", final: true), true)
 check("final: wants it playing", w.listenerPaused, false)
+
+// Re-review 10, finding 2: the Playing notice was missed during the command wait (no look in it); the
+// final look finds Music playing from the state
+w = watch()
+look(&w, [], now: 1, prior: "paused")
+check("missed Playing at the end: final look runs", look(&w, [], now: 1.2, prior: "playing", final: true), true)
+check("missed Playing at the end: wants it playing", w.listenerPaused, false)
+
+// Re-review 10, finding 1: the caller paused Music and the first script failed; the poll finds Music
+// paused, which is the caller's, not the listener's
+w = Watch()
+w.pauseSent(prior: nil, to: at(0.03), byCaller: true)
+check("caller pause, first script failed: poll", look(&w, [], now: 0.5, prior: "paused"), true)
+check("caller pause, first script failed: not the listener's", w.listenerPaused, false)
+check("caller pause, first script failed: final look", look(&w, [], now: 1, prior: "paused", final: true), true)
+check("caller pause, first script failed: still not the listener's", w.listenerPaused, false)
 
 // fast forwarding or rewinding counts as playing
 check("fast forwarding is playing", Watch.wasPlaying("fast forwarding"), true)
