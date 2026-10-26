@@ -944,7 +944,10 @@ final class VirtualDeviceEngine {
     private func tearDown(restoreDefault: Bool, resumeMusic: Bool) {
         // a switch's pause is resumed only while Music is still paused: stopped or quit since means the listener ended it
         let pausedBySwitch = pausedBySwitchAtStop && musicRunning() && scripts.playerState() == "paused"
-        let wasPlaying = resumeMusic && (musicPlaying() || pausedBySwitch)
+        let playingAtEntry = musicPlaying()
+        let wasPlaying = resumeMusic && (playingAtEntry || pausedBySwitch)
+        // Music was already paused here, only the switch's pause is ours: re-check right before the play
+        let resumeOnlyIfPaused = !playingAtEntry && pausedBySwitch
         pausedBySwitchAtStop = false
         if wasPlaying { _ = scripts.pause(); _ = wait(1) { !self.playing } }
         if let p = procA {
@@ -989,7 +992,12 @@ final class VirtualDeviceEngine {
             attach(false)
             UserDefaults.standard.removeObject(forKey: Self.ownsOutputKey)
         }
-        if wasPlaying { playChecked() }
+        if wasPlaying {
+            // the restore above takes seconds: a listener Stop or quit meanwhile is not overridden
+            if resumeOnlyIfPaused, !(musicRunning() && scripts.playerState() == "paused") {
+                log("Music was stopped during the teardown; not playing it again")
+            } else { playChecked() }
+        }
     }
 
     /// True with plug-in 1.0 (no 'LSac': nothing to lose).
