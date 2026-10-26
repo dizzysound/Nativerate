@@ -2035,6 +2035,12 @@ final class VirtualDeviceEngine {
         let tPlay = gatePending ? min(tPlay, gateMarkedAt ?? tPlay) : tPlay
         // Music already paused, and not by a caller: the listener paused after the Playing that
         // brought us here. The rate still switches; Music stays paused (it used to play again here).
+        // Music's notices from the start of the switch to the play decision (the boundary wait, the rate
+        // change, the DAC wait, the command wait): the listener's play and pause in any of them decide
+        // whether Music is played again
+        var watch = StallPolicy.ListenerWatch(startedAt: t)
+        noticeTap = []
+        defer { noticeTap = nil }
         var listenerPaused = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
         _ = scripts.pause()
         var m = marker.load(ordering: .acquiring)
@@ -2052,11 +2058,6 @@ final class VirtualDeviceEngine {
         if change { outFormat.store(0, ordering: .releasing); applyRate(r) }
         recorder?.segmentIn(inFrames.load(ordering: .acquiring), r)
         let td = Date()
-        // Music's notices through the whole switch, up to the play: the listener's play and pause during
-        // the DAC wait and during the command wait decide whether Music is played again
-        var watch = StallPolicy.ListenerWatch(startedAt: t)
-        noticeTap = []
-        defer { noticeTap = nil }
         if change {
             let target = dacFormat(r) ?? AudioStreamBasicDescription(mSampleRate: r, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 0, mBitsPerChannel: 0, mReserved: 0)
             // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
@@ -2080,6 +2081,7 @@ final class VirtualDeviceEngine {
                 self.log("  DAC NOT ready after \(self.ms(td)): \(CA.formats(self.dacOut)); Music stays paused, waiting up to \(Int(StallPolicy.dacSettleExtraWait)) s more")
             })
             if shouldStop {
+                _ = watch.observe(notices: noticeTap ?? [], now: Date())
                 // this switch paused Music; the teardown plays it again unless the listener wanted it paused
                 resumeMusicOnStop = !listenerPaused && !watch.listenerPaused && musicRunning()
                 log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")

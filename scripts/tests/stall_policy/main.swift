@@ -100,5 +100,11 @@ w = StallPolicy.ListenerWatch(startedAt: at(0))
 check("batch: pause, play: paused again", w.observe(notices: [(playing: false, at: at(10)), (playing: true, at: at(10.6))], now: at(10.7)), true)
 check("batch: pause, play: not a listener pause", w.listenerPaused, false)
 
+// the switch's tap runs from its first line: the echo of its own pause, then a listener play and pause in
+// the boundary wait or the rate change (before any DAC wait), all delivered in one batch later
+w = StallPolicy.ListenerWatch(startedAt: at(0))
+check("early gap: no re-pause (it ends paused)", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(0.3)), (playing: false, at: at(0.9))], now: at(2)), false)
+check("early gap: listener paused", w.listenerPaused, true)
+
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
