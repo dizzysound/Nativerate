@@ -102,11 +102,48 @@ check("pause after play: stays so on later polls", w.listenerPaused, true)
 check("play again: script runs", look(&w, [(playing: true, at: 30)], now: 30, prior: "playing"), true)
 check("play again: plays at the end", w.listenerPaused, false)
 
-// Re-review 9, finding 1: our pause went out, the listener plays and pauses at once. The Playing is new
-// (after the command returned); the state is paused, so the listener's pause stands
+// Re-review 9, finding 1: our pause went out, the listener plays and pauses. The Playing is new (after
+// the command returned and its echo window); the state is paused, so the listener's pause stands
 w = watch()
-check("quick play and pause: script runs", look(&w, [(playing: true, at: 0.1), (playing: false, at: 0.11)], now: 0.12, prior: "paused"), true)
+check("quick play and pause: script runs", look(&w, [(playing: true, at: 3), (playing: false, at: 3.01)], now: 3.02, prior: "paused"), true)
 check("quick play and pause: listener paused", w.listenerPaused, true)
+
+// Nativerate 0.1.10 on the coffee Mac (switches 1 and 2): Music posts its own Playing 0.26-0.35 s after our
+// pause, then the Paused for it. Music is paused at the read: the switch's pause, not the listener's
+w = watch()
+check("echo Playing: script runs", look(&w, [(playing: true, at: 0.29), (playing: false, at: 0.30)], now: 0.30, prior: "paused"), true)
+check("echo Playing: not the listener's pause", w.listenerPaused, false)
+look(&w, [(playing: false, at: 0.8)], now: 2, prior: "paused")
+check("echo Playing: still not, on later polls", w.listenerPaused, false)
+
+// an echo-window Playing that really is Music playing (switch 3 of that log) is still paused again
+w = watch()
+check("echo Playing, playing: script runs", look(&w, [(playing: true, at: 0.4)], now: 0.6, prior: "playing"), true)
+check("echo Playing, playing: wants it playing", w.listenerPaused, false)
+
+// the window is measured from the last pause command that found Music playing, not the first
+w = watch()
+look(&w, [(playing: true, at: 10)], now: 10.01, prior: "playing") // command ends 10.06
+check("echo after a re-pause: script runs", look(&w, [(playing: true, at: 10.3)], now: 11.6, prior: "paused"), true)
+check("echo after a re-pause: not the listener's", w.listenerPaused, false)
+w = watch()
+look(&w, [(playing: true, at: 10)], now: 10.01, prior: "playing") // command ends 10.06
+check("play after the window: script runs", look(&w, [(playing: true, at: 12.5)], now: 12.5, prior: "paused"), true)
+check("play after the window: listener paused", w.listenerPaused, true)
+
+// polls that find Music paused are no pause: they do not move the window. Polls at 1.8 s and 3.3 s, then the
+// listener plays (3.5 s) and pauses (3.51 s): the Playing is past the first pause's window, so the pause stands
+w = watch()
+look(&w, [], now: 1.8, prior: "paused")
+look(&w, [], now: 3.3, prior: "paused")
+check("play and pause after polls: script runs", look(&w, [(playing: true, at: 3.5), (playing: false, at: 3.51)], now: 4.9, prior: "paused"), true)
+check("play and pause after polls: listener paused", w.listenerPaused, true)
+// the same polls, then the echo of a pause that did land (Music was playing at 3.3 s): still not the listener's
+w = watch()
+look(&w, [], now: 1.8, prior: "paused")
+look(&w, [], now: 3.3, prior: "playing")
+check("echo after polls: script runs", look(&w, [(playing: true, at: 3.6), (playing: false, at: 3.7)], now: 4.9, prior: "paused"), true)
+check("echo after polls: not the listener's", w.listenerPaused, false)
 
 // Re-review 9, finding 2: Music was paused at the read, the listener plays before the pause, so the pause
 // held a playing Music: nothing of this is the listener's pause
@@ -153,7 +190,7 @@ check("poll finds playing: listener wants it playing", w.listenerPaused, false)
 w = watch()
 check("final: nothing pending, still a script", look(&w, [], now: 9, prior: "paused", final: true), true)
 check("final: Music paused, not the listener's", w.listenerPaused, false)
-check("final: pending Playing, script", look(&w, [(playing: true, at: 9.5)], now: 9.6, prior: "paused", final: true), true)
+check("final: pending Playing, script", look(&w, [(playing: true, at: 12)], now: 12.1, prior: "paused", final: true), true)
 check("final: the listener paused", w.listenerPaused, true)
 w = watch()
 look(&w, [(playing: true, at: 9)], now: 9.01, prior: nil) // failed
