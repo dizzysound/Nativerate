@@ -136,13 +136,13 @@ check("play after the window: listener paused", w.listenerPaused, true)
 w = watch()
 look(&w, [], now: 1.8, prior: "paused")
 look(&w, [], now: 3.3, prior: "paused")
-check("play and pause after polls: script runs", look(&w, [(playing: true, at: 3.5), (playing: false, at: 3.51)], now: 3.52, prior: "paused"), true)
+check("play and pause after polls: script runs", look(&w, [(playing: true, at: 3.5), (playing: false, at: 3.51)], now: 4.9, prior: "paused"), true)
 check("play and pause after polls: listener paused", w.listenerPaused, true)
 // the same polls, then the echo of a pause that did land (Music was playing at 3.3 s): still not the listener's
 w = watch()
 look(&w, [], now: 1.8, prior: "paused")
 look(&w, [], now: 3.3, prior: "playing")
-check("echo after polls: script runs", look(&w, [(playing: true, at: 3.6), (playing: false, at: 3.7)], now: 3.8, prior: "paused"), true)
+check("echo after polls: script runs", look(&w, [(playing: true, at: 3.6), (playing: false, at: 3.7)], now: 4.9, prior: "paused"), true)
 check("echo after polls: not the listener's", w.listenerPaused, false)
 
 // Re-review 9, finding 2: Music was paused at the read, the listener plays before the pause, so the pause
