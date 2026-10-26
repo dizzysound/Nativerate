@@ -656,6 +656,13 @@ final class RendererEngine {
 /// AppleScript for Music, used only on an engine thread (RendererEngine, VirtualDeviceEngine).
 final class RendererScripts {
     private let pauseScript = compile("tell application \"Music\" to pause")
+    private let pauseIfPlayingScript = compile("""
+        tell application "Music"
+            set s to player state as string
+            if s is not "paused" and s is not "stopped" then pause
+            return s
+        end tell
+        """)
     private let playScript = compile("tell application \"Music\" to play")
     private let positionScript = compile("tell application \"Music\" to get player position")
     private let remainingScript = compile("tell application \"Music\" to get (duration of current track) - player position")
@@ -694,6 +701,9 @@ final class RendererScripts {
     }
 
     func pause() -> Bool { run(pauseScript) != nil }
+    /// Pauses Music unless it is paused or stopped; returns the state it had when the script ran, read by
+    /// the same script just before the pause (nil: the script failed).
+    func pauseIfPlaying() -> String? { run(pauseIfPlayingScript)?.stringValue }
     func play() -> Bool { run(playScript) != nil }
     func position() -> Double? { run(positionScript)?.doubleValue }
     func remaining() -> Double? { run(remainingScript)?.doubleValue }

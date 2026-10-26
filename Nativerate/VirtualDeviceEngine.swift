@@ -202,6 +202,8 @@ final class VirtualDeviceEngine {
     private var gridPending: (Int, Int, Int, Int, Int, Int)? // the last clean window, counted once the next is clean too
     private var gridNear = false // the verdict's depth is near its grid (rounded in the playback path), not on it
     private var lastInfoAt = Date.distantPast
+    /// Music's play/pause notices in arrival order, collected while a switch waits for the DAC.
+    private var noticeTap: [(playing: Bool, at: Date)]?
     private var gridSince: Date?
     private var gridVerdict: Int? // 16, 24, or 0 = on neither grid
     // after a lossless upgrade: skip windows until one is on the 24-bit grid (Music still plays the
@@ -256,6 +258,11 @@ final class VirtualDeviceEngine {
     private var othersChoice: String? // the Other apps and alerts choice startOthers followed
     private var othersRestartAt = Date.distantPast
     private let othersFeed = Atomic<Int>(0) // 1: A writes loopback channels 3-4 into others.ring
+    private let othersBuild = BackgroundStart<OthersPlayer.Built>() // the player is built off the engine thread: a stalled coreaudiod must not hold a rate switch
+    private var othersDone: ((Bool) -> Void)? // what to do when the player is up (or isn't); nil: nobody waits for it
+    private var othersLaunched: (device: AudioObjectID, rate: Double)?
+    private var othersLaunchedAt = Date()
+    private var othersSlowLogged = false
     private let othersPeakA = Atomic<UInt32>(0) // A: peak |sample| on channels 3-4 since the last meter line (Float bits)
     private var othersMeterAt = Date()
 
@@ -318,6 +325,7 @@ final class VirtualDeviceEngine {
     private let outFormat = Atomic<Int>(0)    // packed OutFormat for B; 0 = mute
     private let formatDirty = Atomic<Int>(0)
     private let refill = Atomic<Int>(0)       // engine -> B: output silence until the ring is back at the target
+    private let trimToTarget = Atomic<Int>(0) // engine -> B: drop the oldest frames down to the target (the ring filled while the DAC stalled)
     private let dropInput = Atomic<Int>(0)    // 1: A doesn't fill the ring (inside a switch; Music is paused)  // listener -> engine: the DAC's format changed
     private var writtenFormat = AudioStreamBasicDescription()
     private var formatListener: AudioObjectPropertyListenerBlock?
@@ -499,6 +507,7 @@ final class VirtualDeviceEngine {
     private var shouldStop: Bool { inboxLock.lock(); defer { inboxLock.unlock() }; return stopRequested }
 
     private func run() {
+        defer { othersBuild.abandon() } // every exit: a player still being built has no loop left to take it
         log.start()
         log("engine started (virtual device)")
         if let note = UserDefaults.standard.string(forKey: Self.recoveryNoteKey) {
@@ -533,6 +542,7 @@ final class VirtualDeviceEngine {
         // first Playing of the track already playing a "resume" that skips the rate decision.
         dropInput.store(0, ordering: .releasing); lastTrackID = nil; trackRate = nil
         guard setUp() else {
+            othersBuild.abandon() // setUp can fail after it launched the player; nothing takes it while idle
             log("setup failed; engine idle until it is turned off")
             while !shouldStop { Thread.sleep(forTimeInterval: 0.1) }
             log.close()
@@ -1138,13 +1148,14 @@ final class VirtualDeviceEngine {
         othersDevice = sp
         othersRestartAt = Date()
         log("other apps and alert sounds: \(name) (\(note))")
-        if others.start(device: sp, rate: curRate, log: { [unowned self] in self.log($0) }) {
-            othersFeed.store(1, ordering: .releasing)
-            RendererOutput.shared.set(othersRoute: "Other apps play on \(name)", ok: true)
-            refreshReportedLatency()
-        } else {
-            log("other apps: MUTED (the player on \(name) didn't start)")
-            RendererOutput.shared.set(othersRoute: "Other apps muted (\(name) didn't start)", ok: true)
+        beginOthers { [unowned self] ok in
+            if ok {
+                othersFeed.store(1, ordering: .releasing)
+                RendererOutput.shared.set(othersRoute: "Other apps play on \(name)", ok: true)
+            } else {
+                log("other apps: MUTED (the player on \(name) didn't start)")
+                RendererOutput.shared.set(othersRoute: "Other apps muted (\(name) didn't start)", ok: true)
+            }
             refreshReportedLatency()
         }
         OtherAppsOutput.shared.setActive(sp)
@@ -1167,6 +1178,8 @@ final class VirtualDeviceEngine {
 
     private func stopOthers() {
         othersDevice = 0
+        othersDone = nil
+        if let finished = othersBuild.take(), let b = finished { others.discard(b) }
         OtherAppsOutput.shared.setActive(0)
         othersFeed.store(0, ordering: .releasing)
         if others.isRunning { log("other apps: player stopped (\(others.status))") }
@@ -1180,7 +1193,57 @@ final class VirtualDeviceEngine {
         othersRestartAt = Date()
         log("other apps: restarting the player (\(why))")
         othersFeed.store(0, ordering: .releasing)
-        if others.start(device: d, rate: curRate, log: { [unowned self] in self.log($0) }) { othersFeed.store(1, ordering: .releasing); refreshReportedLatency() }
+        beginOthers { [unowned self] ok in
+            if ok { othersFeed.store(1, ordering: .releasing); refreshReportedLatency() }
+        }
+    }
+
+    /// Engine thread: starts the player for `othersDevice` at `curRate` in the background; `done` runs here,
+    /// from `collectOthers`, when it is up (true) or couldn't start (false). A start still running (or hung)
+    /// is not doubled: its result is kept if it still matches `othersDevice` and `curRate`, else rebuilt.
+    private func beginOthers(_ done: @escaping (Bool) -> Void) {
+        othersDone = done
+        othersFeed.store(0, ordering: .releasing)
+        guard !othersBuild.isBusy else { return }
+        launchOthers()
+    }
+
+    private func launchOthers() {
+        let d = othersDevice, r = curRate
+        others.stop()
+        let player = others
+        // refused while an abandoned start is still hung in CoreAudio (see BackgroundStart.begin); collectOthers asks again
+        guard othersBuild.begin({ [weak self] in
+            player.prepare(device: d, rate: r, log: { self?.log($0) })
+        }, orphan: { player.discardLate($0) }) else { return }
+        othersLaunched = (d, r)
+        othersLaunchedAt = Date(); othersSlowLogged = false
+    }
+
+    /// Engine thread, every 0.5 s: takes over the player the background start built.
+    private func collectOthers() {
+        guard let built = othersBuild.take() else {
+            if othersBuild.isBusy {
+                if !othersSlowLogged, Date().timeIntervalSince(othersLaunchedAt) >= 10 {
+                    othersSlowLogged = true
+                    log("other apps: the player is still starting after 10 s (CoreAudio isn't answering); Music does not wait for it")
+                }
+            } else if othersDone != nil, othersDevice != 0 {
+                launchOthers() // the start asked for was refused: an earlier run's start is still hung
+            }
+            return
+        }
+        let wanted = othersDevice != 0 ? othersDone : nil
+        let stale = othersLaunched.map { $0.device != othersDevice || $0.rate != curRate } ?? true
+        if wanted != nil, stale {
+            if let b = built { others.discard(b) }
+            launchOthers()
+            return
+        }
+        othersDone = nil
+        guard let done = wanted else { if let b = built { others.discard(b) }; return }
+        if let b = built { others.adopt(b, log: { [unowned self] in self.log($0) }) }
+        done(built != nil)
     }
 
     /// Every 0.5 s: the speakers' varispeed follows the others ring's fill (the two clocks drift).
@@ -1188,7 +1251,9 @@ final class VirtualDeviceEngine {
     /// posts a configuration change right after every start while it keeps running (pastor Mac, 48k:
     /// restarting on each notice looped 19 times and left it stopped; other apps were silent).
     private func steerOthers() {
+        collectOthers()
         guard othersDevice != 0 else { return }
+        if othersBuild.isBusy || othersDone != nil { return } // a start is under way
         // meter: where other apps' audio is lost, if it is (pastor: YouTube silent on the speakers)
         if Date().timeIntervalSince(othersMeterAt) >= 10 {
             othersMeterAt = Date()
@@ -1229,6 +1294,7 @@ final class VirtualDeviceEngine {
         let pid = (info["PersistentID"] as? NSNumber)?.int64Value ?? (name.isEmpty ? nil : Int64(truncatingIfNeeded: name.hashValue))
         log("playerInfo: \(state) \(name)")
         playing = state == "Playing"
+        noticeTap?.append((playing, at))
         guard !inRoutine else { return } // our own pause/play
         if steppedAside {
             // Music plays straight to the DAC now; the run loop takes the output back
@@ -1747,15 +1813,17 @@ final class VirtualDeviceEngine {
         othersFeed.store(0, ordering: .releasing)
         othersDevice = dac
         othersRestartAt = Date()
-        if others.start(device: dac, rate: curRate, log: { [unowned self] in self.log($0) }) {
-            othersFeed.store(1, ordering: .releasing)
-            OtherAppsOutput.shared.setActive(dac)
-            RendererOutput.shared.set(othersRoute: "Other apps play on \(name) (Music idle)", ok: true)
-            log("other apps -> \(name) while Music is idle")
-            refreshReportedLatency()
-        } else {
-            log("other apps: couldn't play on \(name) while idle; staying where they were")
-            othersDevice = 0
+        beginOthers { [unowned self] ok in
+            if ok {
+                othersFeed.store(1, ordering: .releasing)
+                OtherAppsOutput.shared.setActive(dac)
+                RendererOutput.shared.set(othersRoute: "Other apps play on \(name) (Music idle)", ok: true)
+                log("other apps -> \(name) while Music is idle")
+                refreshReportedLatency()
+            } else {
+                log("other apps: couldn't play on \(name) while idle; staying where they were")
+                othersDevice = 0
+            }
         }
     }
 
@@ -2058,6 +2126,17 @@ final class VirtualDeviceEngine {
 
     // MARK: - The switch routine
 
+    /// Music's notices since the last look go to the watch; when it asks, the pause script runs (a play is
+    /// paused again) and its result goes back.
+    private func holdMusicPaused(_ watch: inout StallPolicy.ListenerWatch, final: Bool = false) {
+        let notices = noticeTap ?? []
+        noticeTap = []
+        guard watch.observe(notices: notices, now: Date(), final: final) else { return }
+        let prior = scripts.pauseIfPlaying()
+        watch.pauseSent(prior: prior, to: Date())
+        if let prior, StallPolicy.ListenerWatch.wasPlaying(prior) { log("  Music playing during the switch; paused again") }
+    }
+
     /// `pausedAt`: when Music was paused, if a caller paused it already (resume from idle).
     private func switchRate(_ r: Float64, name: String, tPlay: Date, pausedAt: Date? = nil, newTrack: Bool = false) {
         inRoutine = true
@@ -2068,10 +2147,16 @@ final class VirtualDeviceEngine {
         // Music can start playing before it posts Playing (after a relaunch): the gate saw the first
         // frame earlier, and that is where the play began
         let tPlay = gatePending ? min(tPlay, gateMarkedAt ?? tPlay) : tPlay
-        // Music already paused, and not by a caller: the listener paused after the Playing that
-        // brought us here. The rate still switches; Music stays paused (it used to play again here).
-        let listenerPaused = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
-        _ = scripts.pause()
+        // Music's notices from the start of the switch to the play decision (the boundary wait, the rate
+        // change, the DAC wait, the command wait): the listener's play and pause in any of them decide
+        // whether Music is played again
+        noticeTap = []
+        defer { noticeTap = nil }
+        // one script reads Music's state and pauses it: paused already, and not by a caller, means the
+        // listener paused after the Playing that brought us here. The rate still switches; Music stays
+        // paused (it used to play again here).
+        var watch = StallPolicy.ListenerWatch()
+        watch.pauseSent(prior: scripts.pauseIfPlaying(), to: Date(), byCaller: pausedAt != nil)
         var m = marker.load(ordering: .acquiring)
         // a new track reported late (a skip): the gap before it, if B hasn't played it yet
         let retro = m < 0 && newTrack ? retroGap() : nil
@@ -2089,11 +2174,28 @@ final class VirtualDeviceEngine {
         let td = Date()
         if change {
             let target = dacFormat(r) ?? AudioStreamBasicDescription(mSampleRate: r, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 0, mBitsPerChannel: 0, mReserved: 0)
-            let ready = DeviceFormat.waitUntilReady(dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: 12, stalled: { [unowned self] in
-                guard let p = self.procB else { return }
-                self.log("  DAC keeps stopping; restarting B")
-                AudioDeviceStop(self.dac, p); AudioDeviceStart(self.dac, p)
+            // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
+            // time: playing into it dropped audio and left the ring full. Music stays paused until it settles.
+            let ready = StallPolicy.settle(first: 12, cancelled: { [unowned self] in self.shouldStop }, attempt: { [unowned self] timeout in
+                DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, cancelled: {
+                    self.pump() // Music's notices: the listener's play and pause during the wait
+                    self.holdMusicPaused(&watch)
+                    return self.shouldStop
+                }, stalled: {
+                    guard let p = self.procB else { return }
+                    self.log("  DAC keeps stopping; restarting B")
+                    AudioDeviceStop(self.dac, p); AudioDeviceStart(self.dac, p)
+                })
+            }, stillWaiting: { [unowned self] in
+                self.log("  DAC NOT ready after \(self.ms(td)): \(CA.formats(self.dacOut)); Music stays paused, waiting up to \(Int(StallPolicy.dacSettleExtraWait)) s more")
             })
+            if shouldStop {
+                holdMusicPaused(&watch, final: true)
+                // this switch paused Music; the teardown plays it again unless the listener wanted it paused
+                pausedBySwitchAtStop = !watch.listenerPaused
+                log("  turned off during the DAC wait; switch abandoned\(pausedBySwitchAtStop ? "; Music plays again after the stop" : "")")
+                return
+            }
             log("  DAC \(ready ? "ready" : "NOT ready") after \(ms(td)): \(CA.formats(dacOut))")
             updateOutFormat()
         }
@@ -2103,14 +2205,23 @@ final class VirtualDeviceEngine {
         let seg = outSegmentAt.exchange(-1, ordering: .acquiringAndReleasing)
         recorder?.segmentOut(seg >= 0 ? seg : outFrames.load(ordering: .acquiring), r)
         resetLock()
+        pump()
+        holdMusicPaused(&watch, final: true)
+        let listenerPaused = watch.listenerPaused
         // stop() waits 20 s for this thread and then restores the output itself; a switch that was
         // blocked in CoreAudio past that must not pick the virtual output and play Music again
         if stoppedDuringSwitch(musicPaused: !listenerPaused) { return }
+        if !listenerPaused && !musicRunning() {
+            // the engine's own quit check is off during a switch; Music asked to play now would be relaunched
+            _ = reclaimDefaultUnlessStopped(musicPaused: false)
+            log("  Music quit during the switch: not played again; switch \(switches) done \(ms(t)) after the request")
+            return
+        }
         if listenerPaused {
             // as the play path does: the device poll would take a default moved during the switch
             // for the listener's pick and follow it
             if !reclaimDefaultUnlessStopped(musicPaused: false) { return }
-            log("  Music was paused before the switch (the listener's pause): stays paused; switch \(switches) done \(ms(t)) after the request")
+            log("  Music was paused by the listener (before or during the switch): stays paused; switch \(switches) done \(ms(t)) after the request")
             return
         }
         let pos = scripts.position() ?? 0
@@ -2337,6 +2448,12 @@ final class VirtualDeviceEngine {
             return
         }
         refillAsked = false
+        // Above twice the target the ring filled while the DAC stalled: locking on it would keep seconds of
+        // latency for good (and cut the end of the next track short), so B drops the oldest frames first.
+        if phase0 == nil, StallPolicy.shouldTrimBeforeLock(fill: ring.fill, target: targetFill, boundaryPending: marker.load(ordering: .acquiring) >= 0) {
+            log("clock: ring at \(ring.fill) frames before the lock (target \(targetFill)); dropping the oldest down to the target")
+            trimToTarget.store(1, ordering: .releasing)
+        }
         dacScalarEst = dacScalarEst == 0 ? rB : dacScalarEst + 0.1 * (rB - dacScalarEst)
         if phase0 == nil { phase0 = phase; log("clock lock: phase0 \(String(format: "%.3f", phase)), fill \(ring.fill), cycles A \(aCycles.load(ordering: .relaxed)) B \(bCycles.load(ordering: .relaxed))") }
         let err = phase - phase0!
@@ -2471,6 +2588,7 @@ final class VirtualDeviceEngine {
         default: break
         }
         if refill.exchange(0, ordering: .acquiringAndReleasing) != 0 { bPlaying = false }
+        if trimToTarget.exchange(0, ordering: .acquiringAndReleasing) != 0, marker.load(ordering: .acquiring) < 0 { ring.trim(keep: targetFill) }
         let m = marker.load(ordering: .acquiring)
         // drop only zeros: the startup backlog, and Music's silence while it isn't playing
         if (!bPlaying || trimIdle.load(ordering: .relaxed) != 0), m < 0, lastNZ.load(ordering: .acquiring) <= ring.readPos, ring.fill > targetFill {
@@ -2721,19 +2839,29 @@ final class OthersPlayer {
         return "other apps: fill \(ring.fill) (target \(target)), varispeed \(String(format: "%.6f", lastRate)), dry \(rs.restarts.load(ordering: .relaxed))x, over \(ring.overruns.load(ordering: .relaxed))"
     }
 
-    /// Plays `ring` (stereo at `rate`) on `device`. False (and stopped) if it can't, or if the output
-    /// isn't `device`: playing into the virtual device would feed the other apps back into themselves.
-    func start(device d: AudioObjectID, rate r: Double, log: (String) -> Void) -> Bool {
-        stop()
-        guard r > 0, let fmt = AVAudioFormat(standardFormatWithSampleRate: r, channels: 2) else { log("other apps: no format at \(r) Hz"); return false }
+    /// A started player, not yet adopted: `prepare` builds it on a background thread, `adopt` takes it over on the engine thread.
+    final class Built: @unchecked Sendable {
+        let engine: AVAudioEngine, varispeed: AVAudioUnitVarispeed
+        let device: AudioObjectID, rate: Double, target: Int
+        init(engine: AVAudioEngine, varispeed: AVAudioUnitVarispeed, device: AudioObjectID, rate: Double, target: Int) {
+            self.engine = engine; self.varispeed = varispeed; self.device = device; self.rate = rate; self.target = target
+        }
+    }
+
+    /// Builds and starts a player of `ring` (stereo at `rate`) on `device`. Nil (and stopped) if it can't,
+    /// or if the output isn't `device`: playing into the virtual device would feed the other apps back into
+    /// themselves. Blocking CoreAudio calls: never on the engine thread. Touches no state of `self` but the
+    /// render state; the caller has stopped the previous player.
+    func prepare(device d: AudioObjectID, rate r: Double, log: (String) -> Void) -> Built? {
+        guard r > 0, let fmt = AVAudioFormat(standardFormatWithSampleRate: r, channels: 2) else { log("other apps: no format at \(r) Hz"); return nil }
         let e = AVAudioEngine()
-        guard let au = e.outputNode.audioUnit else { log("other apps: no output unit"); return false }
+        guard let au = e.outputNode.audioUnit else { log("other apps: no output unit"); return nil }
         var dev = d
         var st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, 4)
-        guard st == noErr else { log("other apps: output device -> \(CA.string(d, kAudioObjectPropertyName)): \(st)"); return false }
-        target = max(2048, Int(r * 0.05))
+        guard st == noErr else { log("other apps: output device -> \(CA.string(d, kAudioObjectPropertyName)): \(st)"); return nil }
+        let target = max(2048, Int(r * 0.05))
         rs.started.store(0, ordering: .releasing)
-        let ring = self.ring, rs = self.rs, scratch = self.scratch, target = self.target
+        let ring = self.ring, rs = self.rs, scratch = self.scratch
         let src = AVAudioSourceNode(format: fmt) { _, _, frameCount, abl -> OSStatus in
             let bufs = UnsafeMutableAudioBufferListPointer(abl)
             let n = min(Int(frameCount), 16384)
@@ -2756,20 +2884,34 @@ final class OthersPlayer {
         e.connect(src, to: vs, format: fmt)
         e.connect(vs, to: e.mainMixerNode, format: fmt)
         e.prepare()
-        do { try e.start() } catch { log("other apps: player start failed: \(error)"); e.stop(); return false }
+        do { try e.start() } catch { log("other apps: player start failed: \(error)"); e.stop(); return nil }
         var cur = AudioObjectID(0); var z = UInt32(4)
         st = AudioUnitGetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &cur, &z)
         guard st == noErr, cur == d else {
             log("other apps: player output is \(CA.string(cur, kAudioObjectPropertyName)), not \(CA.string(d, kAudioObjectPropertyName)); stopped")
-            e.stop(); return false
+            e.stop(); return nil
         }
-        engine = e; varispeed = vs; device = d; rate = r; fillAvg = -1; lastRate = 1
+        return Built(engine: e, varispeed: vs, device: d, rate: r, target: target)
+    }
+
+    /// Engine thread: the player `prepare` built becomes this one.
+    func adopt(_ b: Built, log: (String) -> Void) {
+        if engine != nil { stop() }
+        engine = b.engine; varispeed = b.varispeed; device = b.device; rate = b.rate; target = b.target; fillAvg = -1; lastRate = 1
         configChanged.store(0, ordering: .releasing)
-        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: nil) { [weak self] _ in
+        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: b.engine, queue: nil) { [weak self] _ in
             self?.configChanged.store(1, ordering: .releasing)
         }
-        log("other apps -> \(CA.string(d, kAudioObjectPropertyName)) at \(Int(r)) Hz (AVAudioEngine + varispeed; target fill \(target) frames)")
-        return true
+        log("other apps -> \(CA.string(b.device, kAudioObjectPropertyName)) at \(Int(b.rate)) Hz (AVAudioEngine + varispeed; target fill \(b.target) frames)")
+    }
+
+    /// Any thread: a player that finished building after the engine loop ended.
+    func discardLate(_ b: Built) { b.engine.stop() }
+
+    /// Engine thread: a built player nobody wants any more.
+    func discard(_ b: Built) {
+        b.engine.stop()
+        ring.trim(keep: 0)
     }
 
     /// Why the player needs a rebuild, if it does: stopped, or its output isn't `device` any more. A
