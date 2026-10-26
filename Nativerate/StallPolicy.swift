@@ -115,7 +115,7 @@ final class BackgroundStart<Output>: @unchecked Sendable {
             let r = work()
             lock.lock()
             let wanted = mine == generation
-            if wanted { output = .some(r); worker = false }
+            if wanted { output = .some(r) } // `worker` stays set until `take` or `abandon` finishes with the result
             let handler = orphan
             lock.unlock()
             guard !wanted else { return }
@@ -129,7 +129,7 @@ final class BackgroundStart<Output>: @unchecked Sendable {
     func take() -> Output?? {
         lock.lock(); defer { lock.unlock() }
         guard let o = output else { return nil }
-        output = nil; running = false
+        output = nil; running = false; worker = false
         return o
     }
 
@@ -146,6 +146,6 @@ final class BackgroundStart<Output>: @unchecked Sendable {
         let handler = orphan
         lock.unlock()
         if let waiting { handler?(waiting) }
-        if waited { lock.lock(); worker = false; lock.unlock() }
+        if waited { lock.lock(); worker = false; lock.unlock() } // `begin` was refused throughout, so this cannot clear a newer start's flag
     }
 }

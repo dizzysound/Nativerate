@@ -262,5 +262,24 @@ Thread.sleep(forTimeInterval: 0.2)
 waitedThenReused.abandon()
 check("abandon: a start is accepted after a waiting result was orphaned", waitedThenReused.begin({ 11 }, orphan: note), true)
 
+// a new start tries to get in while the orphan hand-over of a waiting result is still running: it is
+// refused, and the hand-over's last step cannot clear the flag of a later start
+let handoff = BackgroundStart<Int>()
+let inHandler = DispatchSemaphore(value: 0), handlerGo = DispatchSemaphore(value: 0), abandonDone = DispatchSemaphore(value: 0)
+_ = handoff.begin({ 12 }, orphan: { _ in inHandler.signal(); handlerGo.wait() })
+Thread.sleep(forTimeInterval: 0.2)
+DispatchQueue.global().async { handoff.abandon(); abandonDone.signal() }
+inHandler.wait()
+check("handoff: a new start is refused during the orphan hand-over", handoff.begin({ 13 }, orphan: note), false)
+handlerGo.signal(); abandonDone.wait()
+let secondRelease = DispatchSemaphore(value: 0)
+check("handoff: a new start is accepted after the hand-over", handoff.begin({ secondRelease.wait(); return 14 }, orphan: note), true)
+handoff.abandon()
+check("handoff: still refused while the second start's work hangs", handoff.begin({ 15 }, orphan: note), false)
+secondRelease.signal()
+var acceptedAfter = false
+waitFor { acceptedAfter = handoff.begin({ 16 }, orphan: note); return acceptedAfter }
+check("handoff: accepted once the second start's work returned", acceptedAfter, true)
+
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
