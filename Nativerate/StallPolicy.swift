@@ -36,17 +36,19 @@ enum StallPolicy {
     /// when the pause landed), then the Paused for our pause (0.8 s after the command, Nativerate 0.1.10
     /// log on the coffee Mac): a Playing within `echoWindow` of the command's end still gets the state
     /// looked at and a play re-paused, but a paused state does not make it the listener's pause. Without
-    /// that, two switches in three left Music paused until the listener pressed play.
+    /// that, two switches in three left Music paused until the listener pressed play. Only a pause that
+    /// found Music playing starts the window: a poll that finds it paused changes nothing, so it makes no echo.
     ///
     /// Residual windows: a Playing delivered later than `echoWindow` after the pause command that
     /// already covered it counts as a new play (Music then stays paused); a listener who plays and pauses
-    /// again inside the window is not seen; a listener Pause on a Music we already paused posts nothing
+    /// again inside the window of a pause that landed is not seen; a listener Pause on a Music we already paused posts nothing
     /// and cannot be seen.
     struct ListenerWatch {
         static let repauseInterval: TimeInterval = 1.5 // a failed re-pause is asked again after this
         static let pollInterval: TimeInterval = 1.5 // Music is looked at this often even without a Playing notice
         static let echoWindow: TimeInterval = 2 // a Playing this soon after a pause command is Music's own, not a listener's play
         private var commandEnd = Date.distantPast // a Playing from before this was covered by the last pause command
+        private var pauseLanded = Date.distantPast // the last pause command that found Music playing: Music's own Playing can follow it
         private var playPending = false
         private var playFromListener = false // a pending Playing came after the echo window
         private var commanded = false // a pause script has run
@@ -62,7 +64,7 @@ enum StallPolicy {
         mutating func observe(notices: [(playing: Bool, at: Date)], now: Date, final: Bool = false) -> Bool {
             for n in notices where n.playing && n.at > commandEnd {
                 playPending = true
-                if n.at > commandEnd.addingTimeInterval(Self.echoWindow) { playFromListener = true }
+                if n.at > pauseLanded.addingTimeInterval(Self.echoWindow) { playFromListener = true }
             }
             let due = final || (playPending ? now >= nextRepause : now >= nextPoll)
             if due {
@@ -80,6 +82,7 @@ enum StallPolicy {
             guard let prior else { return } // no news: a pending Playing stays pending
             commandEnd = to
             if Self.wasPlaying(prior) {
+                pauseLanded = to
                 listenerPaused = false
             } else if playFromListener || !commanded && !callerPaused {
                 listenerPaused = true

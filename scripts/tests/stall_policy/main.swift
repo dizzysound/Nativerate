@@ -121,7 +121,7 @@ w = watch()
 check("echo Playing, playing: script runs", look(&w, [(playing: true, at: 0.4)], now: 0.6, prior: "playing"), true)
 check("echo Playing, playing: wants it playing", w.listenerPaused, false)
 
-// the window is measured from the last pause command's end, not the first
+// the window is measured from the last pause command that found Music playing, not the first
 w = watch()
 look(&w, [(playing: true, at: 10)], now: 10.01, prior: "playing") // command ends 10.06
 check("echo after a re-pause: script runs", look(&w, [(playing: true, at: 10.3)], now: 11.6, prior: "paused"), true)
@@ -130,6 +130,20 @@ w = watch()
 look(&w, [(playing: true, at: 10)], now: 10.01, prior: "playing") // command ends 10.06
 check("play after the window: script runs", look(&w, [(playing: true, at: 12.5)], now: 12.5, prior: "paused"), true)
 check("play after the window: listener paused", w.listenerPaused, true)
+
+// polls that find Music paused are no pause: they do not move the window. Polls at 1.8 s and 3.3 s, then the
+// listener plays (3.5 s) and pauses (3.51 s): the Playing is past the first pause's window, so the pause stands
+w = watch()
+look(&w, [], now: 1.8, prior: "paused")
+look(&w, [], now: 3.3, prior: "paused")
+check("play and pause after polls: script runs", look(&w, [(playing: true, at: 3.5), (playing: false, at: 3.51)], now: 3.52, prior: "paused"), true)
+check("play and pause after polls: listener paused", w.listenerPaused, true)
+// the same polls, then the echo of a pause that did land (Music was playing at 3.3 s): still not the listener's
+w = watch()
+look(&w, [], now: 1.8, prior: "paused")
+look(&w, [], now: 3.3, prior: "playing")
+check("echo after polls: script runs", look(&w, [(playing: true, at: 3.6), (playing: false, at: 3.7)], now: 3.8, prior: "paused"), true)
+check("echo after polls: not the listener's", w.listenerPaused, false)
 
 // Re-review 9, finding 2: Music was paused at the read, the listener plays before the pause, so the pause
 // held a playing Music: nothing of this is the listener's pause
