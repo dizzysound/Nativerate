@@ -45,194 +45,123 @@ check("cancelled", ready, false)
 check("cancelled: one wait", waits, [12])
 check("cancelled: nothing said", said, 0)
 
-// the listener's play and pause while Music is held paused
+// the listener's play and pause while Music is held paused. Paused notices are not read at all (Music posts
+// them in twos and threes, and late); what the listener did is read from the state the pause script reports.
 let t0 = Date(timeIntervalSinceReferenceDate: 1000)
 func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
-// the switch's own pause goes out at 0.01-0.03 s; ownPause is what the engine reports for each pause it sends
-func watch(pausedAtStart: Bool = false, ownPause: Bool = true) -> StallPolicy.ListenerWatch {
-    var w = StallPolicy.ListenerWatch(startedAt: at(0), pausedAtStart: pausedAtStart)
-    w.ownPause(from: at(0.01), to: at(0.03), tookEffect: ownPause)
+typealias Watch = StallPolicy.ListenerWatch
+// the switch's first pause script returns at 0.03 s, Music's state read by it is `prior`
+func watch(prior: String? = "playing", byCaller: Bool = false) -> Watch {
+    var w = Watch()
+    w.pauseSent(prior: prior, to: at(0.03), byCaller: byCaller)
     return w
 }
-func repause(_ w: inout StallPolicy.ListenerWatch, _ from: TimeInterval, tookEffect: Bool = true) {
-    w.ownPause(from: at(from), to: at(from + 0.05), tookEffect: tookEffect)
+// what the engine does at each look: observe, and run the script (reporting `prior`) when asked
+@discardableResult
+func look(_ w: inout Watch, _ notices: [(playing: Bool, at: TimeInterval)], now: TimeInterval, prior: String?, final: Bool = false) -> Bool {
+    let ran = w.observe(notices: notices.map { (playing: $0.playing, at: at($0.at)) }, now: at(now), final: final)
+    if ran { w.pauseSent(prior: prior, to: at(now + 0.05)) }
+    return ran
 }
 
 var w = watch()
-check("untouched: no re-pause", w.observe(notices: [(playing: false, at: at(-5))], now: at(1)), false)
 check("untouched: not paused by listener", w.listenerPaused, false)
+check("untouched: first poll is due at once", look(&w, [(playing: false, at: 0.05)], now: 0.1, prior: "paused"), true)
+check("untouched: a Paused notice and a paused poll are not the listener's", w.listenerPaused, false)
+check("untouched: next poll not before the interval", look(&w, [], now: 1.0, prior: "paused"), false)
+check("untouched: polls again after it", look(&w, [], now: 1.7, prior: "paused"), true)
+check("untouched: still not the listener's", w.listenerPaused, false)
 
-// the Playing that brought the switch here (before it started) is not the listener playing during it
+// Music already paused when the first script runs, and not by a caller: the listener paused
+w = watch(prior: "paused")
+check("paused at start: listener's", w.listenerPaused, true)
+w = watch(prior: "paused", byCaller: true)
+check("paused by the caller: not the listener's", w.listenerPaused, false)
+w = watch(prior: "stopped")
+check("stopped at start: not playing", w.listenerPaused, true)
+
+// the Playing that brought the switch here arrives before the first script returned: covered by it
 w = watch()
-check("old Playing: no re-pause", w.observe(notices: [(playing: true, at: at(-1))], now: at(0.1)), false)
-check("old Playing: its echo, then nothing", w.observe(notices: [(playing: false, at: at(0.05))], now: at(0.2)), false)
+_ = look(&w, [(playing: true, at: 0.01)], now: 0.1, prior: "paused") // a poll, not a re-pause for the old Playing
 check("old Playing: not a play", w.listenerPaused, false)
 
-// play: paused again once, not on every poll; the echo of our pause is not a listener pause
+// play: paused again once, Music playing again means the listener wants it playing
 w = watch()
-check("play: paused again", w.observe(notices: [(playing: true, at: at(10))], now: at(10)), true)
-repause(&w, 10.01)
-check("play: not again at once", w.observe(notices: [], now: at(10.1)), false)
-check("play: echo", w.observe(notices: [(playing: false, at: at(10.2))], now: at(10.3)), false)
-check("play: later poll", w.observe(notices: [], now: at(12)), false)
+check("play: script runs", look(&w, [(playing: true, at: 10)], now: 10.01, prior: "playing"), true)
+check("play: not asked again at once", look(&w, [], now: 10.1, prior: "paused"), false)
+check("play: our pause's Paused notices are nothing", look(&w, [(playing: false, at: 10.2), (playing: false, at: 10.2), (playing: false, at: 10.3)], now: 10.4, prior: "paused"), false)
 check("play only: plays at the end", w.listenerPaused, false)
 
-// play, then pause (the reviewer's sequence): stays paused
-check("pause after play", w.observe(notices: [(playing: false, at: at(20))], now: at(20.01)), false)
+// play, then pause before the script runs (also the notices arriving as one batch): stays paused
+check("pause after play: script runs", look(&w, [(playing: true, at: 20), (playing: false, at: 20.01)], now: 20.02, prior: "paused"), true)
 check("pause after play: listener paused", w.listenerPaused, true)
+look(&w, [], now: 25, prior: "paused")
+check("pause after play: stays so on later polls", w.listenerPaused, true)
 
 // play again after that: wants playback again
-check("play again", w.observe(notices: [(playing: true, at: at(30))], now: at(30)), true)
+check("play again: script runs", look(&w, [(playing: true, at: 30)], now: 30, prior: "playing"), true)
 check("play again: plays at the end", w.listenerPaused, false)
 
-// play, our pause, its echo, and the listener's pause right after it
+// Re-review 9, finding 1: our pause went out, the listener plays and pauses at once. The Playing is new
+// (after the command returned); the state is paused, so the listener's pause stands
 w = watch()
-check("quick pause: paused again", w.observe(notices: [(playing: true, at: at(10))], now: at(10.02)), true)
-repause(&w, 10.03)
-check("quick pause: our echo", w.observe(notices: [(playing: false, at: at(10.1))], now: at(10.15)), false)
-check("quick pause: still ours", w.listenerPaused, false)
-check("quick pause: listener's pause", w.observe(notices: [(playing: false, at: at(10.6))], now: at(10.65)), false)
-check("quick pause: listener paused", w.listenerPaused, true)
-check("quick pause: stays so on later polls", w.observe(notices: [], now: at(13)) == false && w.listenerPaused, true)
+check("quick play and pause: script runs", look(&w, [(playing: true, at: 0.1), (playing: false, at: 0.11)], now: 0.12, prior: "paused"), true)
+check("quick play and pause: listener paused", w.listenerPaused, true)
 
-// the switch's own pause echoes before the listener's play (Music posts in order); then the re-pause's echo
+// Re-review 9, finding 2: Music was paused at the read, the listener plays before the pause, so the pause
+// held a playing Music: nothing of this is the listener's pause
+w = watch(prior: "playing")
+check("play before the first pause: plays at the end", w.listenerPaused, false)
+// in the DAC wait: the listener pauses before our pause runs, the script finds it paused
 w = watch()
-check("two echoes: switch's echo", w.observe(notices: [(playing: false, at: at(0.05))], now: at(0.06)), false)
-check("two echoes: play", w.observe(notices: [(playing: true, at: at(0.1))], now: at(0.12)), true)
-repause(&w, 0.13)
-check("two echoes: re-pause's echo", w.observe(notices: [(playing: false, at: at(0.25))], now: at(0.27)), false)
-check("two echoes: not a listener pause", w.listenerPaused, false)
+check("pause before the re-pause: script runs", look(&w, [(playing: true, at: 5)], now: 5.01, prior: "paused"), true)
+check("pause before the re-pause: listener paused", w.listenerPaused, true)
 
-// Music playing at the start, the switch's own pause posted no notice: the listener's play and pause, in
-// one batch or apart, are not taken for its echo (the play arrives after the command returned and drops it)
+// Re-review 8, finding 1: the listener's Pause and Play land before our first pause; the pause finds Music
+// playing, so the listener's last action was Play
+w = watch(prior: "playing")
+check("pause+play before the first pause: not paused", w.listenerPaused, false)
+look(&w, [(playing: false, at: 0.001), (playing: true, at: 0.002), (playing: false, at: 0.04)], now: 0.1, prior: "paused") // all covered by the first script
+check("pause+play before the first pause: still not paused", w.listenerPaused, false)
+
+// duplicate Playing notices (one batch, or the second one after the script covered the first) are one play
 w = watch()
-check("no switch echo: batch ends paused", w.observe(notices: [(playing: true, at: at(0.5)), (playing: false, at: at(0.6))], now: at(0.7)), false)
-check("no switch echo: listener paused", w.listenerPaused, true)
-w = watch()
-check("no switch echo, apart: play", w.observe(notices: [(playing: true, at: at(0.5))], now: at(0.51)), true)
-repause(&w, 0.52)
-check("no switch echo, apart: re-pause's echo", w.observe(notices: [(playing: false, at: at(0.6))], now: at(0.61)), false)
-check("no switch echo, apart: not yet", w.listenerPaused, false)
-check("no switch echo, apart: listener's pause", w.observe(notices: [(playing: true, at: at(5)), (playing: false, at: at(5.5))], now: at(5.6)), false)
-check("no switch echo, apart: listener paused", w.listenerPaused, true)
-
-// a re-pause's echo that comes late, while the DAC is still waiting, is still ours
-w = watch()
-check("late echo: switch's echo", w.observe(notices: [(playing: false, at: at(0.05))], now: at(0.06)), false)
-check("late echo: play", w.observe(notices: [(playing: true, at: at(10))], now: at(10.01)), true)
-repause(&w, 10.02)
-check("late echo: echo 3 s later", w.observe(notices: [(playing: false, at: at(13))], now: at(13.01)), false)
-check("late echo: not a listener pause", w.listenerPaused, false)
-check("late echo: stays so", w.observe(notices: [], now: at(20)) == false && w.listenerPaused, false)
-
-// a play and a pause that arrive in one batch (the reviewer's case): the listener's pause stands
-w = watch()
-check("batch: no re-pause (it ends paused)", w.observe(notices: [(playing: true, at: at(10)), (playing: false, at: at(10.6))], now: at(10.7)), false)
-check("batch: listener paused", w.listenerPaused, true)
-
-// a batch that ends playing is paused again, and the listener has not paused
-w = watch()
-check("batch: pause, play: paused again", w.observe(notices: [(playing: false, at: at(10)), (playing: true, at: at(10.6))], now: at(10.7)), true)
-check("batch: pause, play: not a listener pause", w.listenerPaused, false)
-
-// the switch's tap runs from its first line: the echo of its own pause, then a listener play and pause in
-// the boundary wait or the rate change (before any DAC wait), all delivered in one batch later
-w = watch()
-check("early gap: no re-pause (it ends paused)", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(0.3)), (playing: false, at: at(0.9))], now: at(2)), false)
-check("early gap: listener paused", w.listenerPaused, true)
-
-// Music already paused (a caller paused it; the switch's pause posts no notice): the listener's play, then
-// pause, before any echo arrives, must not be taken for the switch's echo
-w = watch(ownPause: false)
-check("caller-paused: play is paused again", w.observe(notices: [(playing: true, at: at(0.3))], now: at(0.31)), true)
-repause(&w, 0.32)
-check("caller-paused: our re-pause's echo", w.observe(notices: [(playing: false, at: at(0.4))], now: at(0.41)), false)
-check("caller-paused: only our echo so far", w.listenerPaused, false)
-check("caller-paused: listener's pause", w.observe(notices: [(playing: false, at: at(0.6))], now: at(0.61)), false)
-check("caller-paused: listener paused", w.listenerPaused, true)
-
-// the same with a play and a pause arriving together and no echo at all
-w = watch(ownPause: false)
-check("no echo: batch ends paused", w.observe(notices: [(playing: true, at: at(0.3)), (playing: false, at: at(0.6))], now: at(0.7)), false)
-check("no echo: listener paused", w.listenerPaused, true)
-
-// a re-pause that finds Music already paused took no effect and has no echo: the listener's pause behind it counts
-w = watch()
-check("empty re-pause: first notice (switch's echo)", w.observe(notices: [(playing: false, at: at(0.05))], now: at(0.06)), false)
-check("empty re-pause: play", w.observe(notices: [(playing: true, at: at(5))], now: at(5.01)), true)
-repause(&w, 5.015, tookEffect: false)
-check("empty re-pause: listener's pause", w.observe(notices: [(playing: false, at: at(5.02))], now: at(5.03)), false)
-check("empty re-pause: listener paused", w.listenerPaused, true)
-
-// Music paused by the listener before the switch: that stands until the listener plays, and a later play
-// replaces it (the latest action wins)
-w = watch(pausedAtStart: true, ownPause: false)
-check("paused at start: listener paused", w.listenerPaused, true)
-check("paused at start: its late notice changes nothing", w.observe(notices: [(playing: false, at: at(0.02))], now: at(0.03)), false)
-check("paused at start: still paused", w.listenerPaused, true)
-check("paused at start: play during the wait is paused again", w.observe(notices: [(playing: true, at: at(10))], now: at(10.01)), true)
-check("paused at start: play replaces it", w.listenerPaused, false)
-repause(&w, 10.02)
-check("paused at start: our re-pause's echo", w.observe(notices: [(playing: false, at: at(10.1))], now: at(10.2)), false)
-check("paused at start: still plays at the end", w.listenerPaused, false)
-check("paused at start: pause again", w.observe(notices: [(playing: false, at: at(20))], now: at(20.01)), false)
-check("paused at start: paused at the end", w.listenerPaused, true)
-
-// Re-review 8, finding 1: the listener's pause and play land before the switch's pause command goes out,
-// which then pauses the playing Music. Notices: Paused, Playing (both before the command), Paused (its echo).
-// The listener's last action was a play: Music plays after the switch.
-w = StallPolicy.ListenerWatch(startedAt: at(0))
-w.ownPause(from: at(0.2), to: at(0.25), tookEffect: true)
-check("early listener play: no re-pause", w.observe(notices: [(playing: false, at: at(0.1)), (playing: true, at: at(0.15)), (playing: false, at: at(0.3))], now: at(0.4)), false)
-check("early listener play: the last action was a play", w.listenerPaused, false)
-// and the same notices when the listener pauses again afterwards
-check("early listener play, then pause", w.observe(notices: [(playing: false, at: at(3))], now: at(3.01)), false)
-check("early listener play, then pause: listener paused", w.listenerPaused, true)
-
-// Re-review 8, finding 2: a re-pause took effect but posted no notice; the listener plays again, then
-// pauses. The second play drops the stale echo, so the pause is the listener's.
-w = watch()
-check("stale echo: first play", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(10))], now: at(10.01)), true)
-repause(&w, 10.02)
-check("stale echo: no notice from the re-pause", w.observe(notices: [], now: at(10.5)), false)
-check("stale echo: second play", w.observe(notices: [(playing: true, at: at(12))], now: at(12)), true)
-repause(&w, 12.01, tookEffect: false) // the listener paused before the engine looked
-check("stale echo: listener's pause", w.observe(notices: [(playing: false, at: at(12.02))], now: at(12.03)), false)
-check("stale echo: listener paused", w.listenerPaused, true)
-// ... and when the engine did pause it (took effect) and the listener paused later: Music was paused already
-w = watch()
-check("stale echo 2: first play", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(10))], now: at(10.01)), true)
-repause(&w, 10.02)
-check("stale echo 2: second play", w.observe(notices: [(playing: true, at: at(12))], now: at(12)), true)
-repause(&w, 12.01)
-check("stale echo 2: only the echo", w.observe(notices: [(playing: false, at: at(12.1))], now: at(12.2)), false)
-check("stale echo 2: not a listener pause", w.listenerPaused, false)
-
-// Re-review 8, finding 3: a re-pause that did not take effect (Music still playing) leaves no echo due, so
-// the listener's pause before the retry is not swallowed by it
-w = watch()
-check("retry: play", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(10))], now: at(10.01)), true)
-repause(&w, 10.02, tookEffect: false) // Music still playing after it
-check("retry: asked again after the interval", w.observe(notices: [], now: at(10.01 + StallPolicy.ListenerWatch.repauseInterval)), true)
-repause(&w, 11.6, tookEffect: false) // the listener paused first
-check("retry: listener's late pause", w.observe(notices: [(playing: false, at: at(11.7))], now: at(11.71)), false)
-check("retry: listener paused", w.listenerPaused, true)
-
-// a pause that took effect and a later one that did too: only the later one is due (the first did not hold)
-w = watch()
-check("retry 2: play", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(10))], now: at(10.01)), true)
-repause(&w, 10.02)
-repause(&w, 11.6)
-check("retry 2: one echo", w.observe(notices: [(playing: false, at: at(11.7))], now: at(11.71)), false)
-check("retry 2: listener's pause after it", w.observe(notices: [(playing: false, at: at(15))], now: at(15)), false)
-check("retry 2: listener paused", w.listenerPaused, true)
-
-// duplicate Playing notices change nothing
-w = watch()
-check("duplicate Playing: first", w.observe(notices: [(playing: false, at: at(0.05)), (playing: true, at: at(10)), (playing: true, at: at(10.001))], now: at(10.01)), true)
-repause(&w, 10.02)
-check("duplicate Playing: echo", w.observe(notices: [(playing: false, at: at(10.1))], now: at(10.2)), false)
+check("duplicate Playing: one script", look(&w, [(playing: true, at: 10), (playing: true, at: 10.001)], now: 10.01, prior: "playing"), true)
+check("duplicate Playing: late copy covered by the script", look(&w, [(playing: true, at: 10.04)], now: 10.1, prior: "paused"), false)
 check("duplicate Playing: not a listener pause", w.listenerPaused, false)
+
+// a script that failed (nil): the Playing stays pending and is asked again after the interval, not before
+w = watch()
+check("failed script: asked", look(&w, [(playing: true, at: 10)], now: 10.01, prior: nil), true)
+check("failed script: not at once", look(&w, [], now: 10.5, prior: "playing"), false)
+check("failed script: asked again", look(&w, [], now: 11.6, prior: "paused"), true)
+check("failed script: the listener paused meanwhile", w.listenerPaused, true)
+
+// a failed first script: the first poll finds Music paused and no caller paused it: the listener's
+w = watch(prior: nil)
+check("failed first script: not known yet", w.listenerPaused, false)
+check("failed first script: poll", look(&w, [], now: 0.5, prior: "paused"), true)
+check("failed first script: paused by the listener", w.listenerPaused, true)
+
+// a poll finds Music playing with no Playing notice seen (it came in the window after the script read
+// the state): paused, and the listener wants it playing
+w = watch()
+check("poll finds playing: script runs", look(&w, [], now: 3, prior: "playing"), true)
+check("poll finds playing: listener wants it playing", w.listenerPaused, false)
+
+// last look before Music is played: only a pending Playing asks for a script, and the throttle is off
+w = watch()
+check("final: nothing pending, no script", look(&w, [], now: 9, prior: "playing", final: true), false)
+check("final: pending Playing, script", look(&w, [(playing: true, at: 9.5)], now: 9.6, prior: "paused", final: true), true)
+check("final: the listener paused", w.listenerPaused, true)
+w = watch()
+look(&w, [(playing: true, at: 9)], now: 9.01, prior: nil) // failed
+check("final: pending after a failure, inside the interval", look(&w, [], now: 9.2, prior: "playing", final: true), true)
+check("final: wants it playing", w.listenerPaused, false)
+
+// fast forwarding or rewinding counts as playing
+check("fast forwarding is playing", Watch.wasPlaying("fast forwarding"), true)
+check("paused is not playing", Watch.wasPlaying("paused"), false)
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")

@@ -25,60 +25,56 @@ enum StallPolicy {
     /// play and pause meanwhile. A play is paused again (it would play into the stalled DAC and move the
     /// position the rewind is measured from); a pause after a play means the listener wants it paused.
     ///
-    /// Only a Playing is certainly the listener's. A Paused is ours when it is the echo of a pause the engine
-    /// sent that changed Music's state (`ownPause`), and the listener's otherwise. At most one echo is due:
-    /// a later pause that took effect means the earlier one did not. An echo cannot arrive before its
-    /// command went out, and Music posts its notices in order, so a Playing that arrives after the command
-    /// returned finds the echo already delivered; if it is still due, none was posted and it is dropped.
-    /// A listener's pause needs a Playing before it, so a dropped or stale echo never swallows one.
+    /// Music's Paused notices come in twos and threes and late, so none is read here. Only a Playing is
+    /// news (the engine never plays Music during a switch), and what the listener did is read from Music's
+    /// state instead: each pause the engine sends is one script that reads the state and pauses in one
+    /// step (`pauseSent`), so the state it reports cannot change between the read and the pause. State
+    /// "playing": the listener wants it playing and the pause held it. Not playing, after a Playing
+    /// notice: the listener paused it again (or it was never played; see the residual windows below).
+    ///
+    /// Residual windows: a Playing delivered later than the end of the pause command that already covered
+    /// it counts as a new play (Music then stays paused); a listener Pause on a Music we already paused
+    /// posts nothing and cannot be seen.
     struct ListenerWatch {
-        static let repauseInterval: TimeInterval = 1.5 // a re-pause that has not taken effect is asked again after this
-        private static let deliverySlack: TimeInterval = 0.25 // a Playing this soon after a command may still have been posted before it ran
-        private var played = false
-        private var pausedAfter = false
-        private var lastPlaying = false // the last notice since the switch began
-        private var echo: (from: Date, to: Date)? // the command whose Paused notice is still due
-        private var pausedAtStart: Bool // the listener had already paused before the switch began
-        private let startedAt: Date
-        private var repauseAt = Date.distantPast
+        static let repauseInterval: TimeInterval = 1.5 // a failed re-pause is asked again after this
+        static let pollInterval: TimeInterval = 1.5 // Music is looked at this often even without a Playing notice
+        private var commandEnd = Date.distantPast // a Playing from before this was covered by the last pause command
+        private var playPending = false
+        private var commanded = false // a pause script has run
+        private var nextRepause = Date.distantPast
+        private var nextPoll = Date.distantPast
+        private(set) var listenerPaused = false
 
-        /// `pausedAtStart`: Music was already paused by the listener when the switch began; a later play
-        /// replaces that.
-        init(startedAt: Date, pausedAtStart: Bool = false) {
-            self.startedAt = startedAt
-            self.pausedAtStart = pausedAtStart
-        }
-
-        /// A pause the engine sent, from `from` to `to`. `tookEffect`: Music was playing and is paused now;
-        /// only then is an echo due (a pause of an already paused Music may post none).
-        mutating func ownPause(from: Date, to: Date, tookEffect: Bool) {
-            if tookEffect { echo = (from, to) }
-        }
-
-        /// `notices`: every Music notice since the last call, in order (a play and a pause can arrive together).
-        /// True when Music is playing and must be paused again now; report that pause with `ownPause`.
-        mutating func observe(notices: [(playing: Bool, at: Date)], now: Date) -> Bool {
-            for n in notices {
-                // a notice from before the switch is not news (the Playing that brought us here)
-                guard n.at > startedAt else { continue }
-                defer { lastPlaying = n.playing }
-                if n.playing {
-                    if let e = echo, n.at > e.to.addingTimeInterval(Self.deliverySlack) { echo = nil }
-                    played = true
-                    pausedAtStart = false
-                    pausedAfter = false
-                } else if let e = echo, n.at >= e.from {
-                    echo = nil
-                } else if played {
-                    pausedAfter = true
-                }
+        /// `notices`: every Music notice since the last call. True when the engine must run its pause
+        /// script now (a Playing arrived, or it is time to look), then report it with `pauseSent`.
+        /// `final`: the last look before Music is played again: only a pending Playing asks for one.
+        mutating func observe(notices: [(playing: Bool, at: Date)], now: Date, final: Bool = false) -> Bool {
+            for n in notices where n.playing && n.at > commandEnd { playPending = true }
+            let due = playPending ? final || now >= nextRepause : !final && now >= nextPoll
+            if due {
+                nextRepause = now.addingTimeInterval(Self.repauseInterval)
+                nextPoll = now.addingTimeInterval(Self.pollInterval)
             }
-            guard lastPlaying, now >= repauseAt else { return false }
-            repauseAt = now.addingTimeInterval(Self.repauseInterval)
-            return true
+            return due
         }
 
-        var listenerPaused: Bool { pausedAtStart || (played && pausedAfter) }
+        /// The result of the pause script: `prior` is Music's state when it ran (nil: the script failed),
+        /// `to` when it returned. `byCaller`: a caller of the switch had paused Music already, so a paused
+        /// state at the first command is not the listener's.
+        mutating func pauseSent(prior: String?, to: Date, byCaller: Bool = false) {
+            guard let prior else { return } // no news: a pending Playing stays pending
+            commandEnd = to
+            if Self.wasPlaying(prior) {
+                listenerPaused = false
+            } else if playPending || !commanded && !byCaller {
+                listenerPaused = true
+            }
+            playPending = false
+            commanded = true
+        }
+
+        /// Music's states while it is not playing; anything else (fast forwarding, rewinding) is playing.
+        static func wasPlaying(_ state: String) -> Bool { state != "paused" && state != "stopped" }
     }
 
     /// The clock lock holds the ring's fill for good, so a ring that filled up while the DAC stalled is cut

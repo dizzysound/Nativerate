@@ -2023,6 +2023,17 @@ final class VirtualDeviceEngine {
 
     // MARK: - The switch routine
 
+    /// Music's notices since the last look go to the watch; when it asks, the pause script runs (a play is
+    /// paused again) and its result goes back.
+    private func holdMusicPaused(_ watch: inout StallPolicy.ListenerWatch, final: Bool = false) {
+        let notices = noticeTap ?? []
+        noticeTap = []
+        guard watch.observe(notices: notices, now: Date(), final: final) else { return }
+        let prior = scripts.pauseIfPlaying()
+        watch.pauseSent(prior: prior, to: Date())
+        if let prior, StallPolicy.ListenerWatch.wasPlaying(prior) { log("  Music playing during the switch; paused again") }
+    }
+
     /// `pausedAt`: when Music was paused, if a caller paused it already (resume from idle).
     private func switchRate(_ r: Float64, name: String, tPlay: Date, pausedAt: Date? = nil, newTrack: Bool = false) {
         inRoutine = true
@@ -2033,19 +2044,16 @@ final class VirtualDeviceEngine {
         // Music can start playing before it posts Playing (after a relaunch): the gate saw the first
         // frame earlier, and that is where the play began
         let tPlay = gatePending ? min(tPlay, gateMarkedAt ?? tPlay) : tPlay
-        // Music already paused, and not by a caller: the listener paused after the Playing that
-        // brought us here. The rate still switches; Music stays paused (it used to play again here).
         // Music's notices from the start of the switch to the play decision (the boundary wait, the rate
         // change, the DAC wait, the command wait): the listener's play and pause in any of them decide
         // whether Music is played again
         noticeTap = []
         defer { noticeTap = nil }
-        let pausedAtStart = pausedAt == nil && scripts.playerState().map { $0 != "playing" } == true
-        var watch = StallPolicy.ListenerWatch(startedAt: t, pausedAtStart: pausedAtStart)
-        // pausing a Music that is already paused (the caller's pause, the listener's) may post no notice
-        let pauseFrom = Date()
-        let paused = scripts.pause()
-        watch.ownPause(from: pauseFrom, to: Date(), tookEffect: paused && pausedAt == nil && !pausedAtStart)
+        // one script reads Music's state and pauses it: paused already, and not by a caller, means the
+        // listener paused after the Playing that brought us here. The rate still switches; Music stays
+        // paused (it used to play again here).
+        var watch = StallPolicy.ListenerWatch()
+        watch.pauseSent(prior: scripts.pauseIfPlaying(), to: Date(), byCaller: pausedAt != nil)
         var m = marker.load(ordering: .acquiring)
         // a new track reported late (a skip): the gap before it, if B hasn't played it yet
         let retro = m < 0 && newTrack ? retroGap() : nil
@@ -2068,19 +2076,7 @@ final class VirtualDeviceEngine {
             let ready = StallPolicy.settle(first: 12, cancelled: { [unowned self] in self.shouldStop }, attempt: { [unowned self] timeout in
                 DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, cancelled: {
                     self.pump() // Music's notices: the listener's play and pause during the wait
-                    let notices = self.noticeTap ?? []
-                    self.noticeTap = []
-                    if watch.observe(notices: notices, now: Date()) {
-                        let state = self.scripts.playerState()
-                        if state == nil || state == "playing" {
-                            self.log("  Music playing during the DAC wait; paused again")
-                            let from = Date()
-                            let ok = self.scripts.pause()
-                            let to = Date()
-                            // an echo is due only if Music is paused now (the listener's pause may be what did it)
-                            watch.ownPause(from: from, to: to, tookEffect: ok && self.scripts.playerState() == "paused")
-                        }
-                    }
+                    self.holdMusicPaused(&watch)
                     return self.shouldStop
                 }, stalled: {
                     guard let p = self.procB else { return }
@@ -2091,7 +2087,7 @@ final class VirtualDeviceEngine {
                 self.log("  DAC NOT ready after \(self.ms(td)): \(CA.formats(self.dacOut)); Music stays paused, waiting up to \(Int(StallPolicy.dacSettleExtraWait)) s more")
             })
             if shouldStop {
-                _ = watch.observe(notices: noticeTap ?? [], now: Date())
+                holdMusicPaused(&watch, final: true)
                 // this switch paused Music; the teardown plays it again unless the listener wanted it paused
                 resumeMusicOnStop = !watch.listenerPaused && musicRunning()
                 log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")
@@ -2107,8 +2103,7 @@ final class VirtualDeviceEngine {
         recorder?.segmentOut(seg >= 0 ? seg : outFrames.load(ordering: .acquiring), r)
         resetLock()
         pump()
-        _ = watch.observe(notices: noticeTap ?? [], now: Date())
-        noticeTap = []
+        holdMusicPaused(&watch, final: true)
         let listenerPaused = watch.listenerPaused
         if !listenerPaused && !musicRunning() {
             // the engine's own quit check is off during a switch; Music asked to play now would be relaunched
