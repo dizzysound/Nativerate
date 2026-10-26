@@ -180,5 +180,29 @@ check("caller pause, first script failed: still not the listener's", w.listenerP
 check("fast forwarding is playing", Watch.wasPlaying("fast forwarding"), true)
 check("paused is not playing", Watch.wasPlaying("paused"), false)
 
+
+// A start that never returns must not hold the caller: begin returns at once, take finds nothing, a second
+// begin is refused, and the result is delivered once it comes
+let bs = BackgroundStart<Int>()
+let release = DispatchSemaphore(value: 0)
+let t0 = Date()
+check("start: begin accepted", bs.begin { release.wait(); return 7 }, true)
+check("start: begin returned without waiting", Date().timeIntervalSince(t0) < 0.5, true)
+check("start: busy while running", bs.isBusy, true)
+check("start: second begin refused", bs.begin { 99 }, false)
+check("start: nothing to take while running", bs.take() == nil, true)
+release.signal()
+var got: Int?? = nil
+for _ in 0..<200 { got = bs.take(); if got != nil { break }; Thread.sleep(forTimeInterval: 0.01) }
+check("start: result delivered", got == .some(.some(7)), true)
+check("start: free after take", bs.isBusy, false)
+check("start: nothing left to take", bs.take() == nil, true)
+check("start: a failed start delivers nil, not 'still running'", { () -> Bool in
+    _ = bs.begin { nil }
+    for _ in 0..<200 { if let r = bs.take() { return r == nil }; Thread.sleep(forTimeInterval: 0.01) }
+    return false
+}(), true)
+check("start: begin accepted again", bs.begin { 1 }, true)
+
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")

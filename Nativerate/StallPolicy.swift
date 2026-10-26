@@ -86,3 +86,36 @@ enum StallPolicy {
         !boundaryPending && target > 0 && fill > 2 * target
     }
 }
+
+/// Runs one blocking start off the engine thread. A CoreAudio call that never returns (coreaudiod
+/// stalled on the other-apps player under saturated CPU, 3+ min) then costs that start, not the rate
+/// switch: the engine thread only looks for the result and never waits for it.
+final class BackgroundStart<Output>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = false
+    private var output: Output??
+
+    /// A start is running, or its result has not been taken yet.
+    var isBusy: Bool { lock.lock(); defer { lock.unlock() }; return running }
+
+    /// False (and `work` not run) if a start is already busy.
+    @discardableResult
+    func begin(_ work: @escaping () -> Output?) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !running else { return false }
+        running = true; output = nil
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let r = work()
+            lock.lock(); output = .some(r); lock.unlock()
+        }
+        return true
+    }
+
+    /// nil while the work is still running; else its result (nil inside: it failed) and the start is free again.
+    func take() -> Output?? {
+        lock.lock(); defer { lock.unlock() }
+        guard let o = output else { return nil }
+        output = nil; running = false
+        return o
+    }
+}
