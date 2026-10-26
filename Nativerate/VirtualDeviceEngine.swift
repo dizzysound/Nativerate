@@ -148,6 +148,7 @@ final class VirtualDeviceEngine {
     private var infoInbox: [(Date, [AnyHashable: Any])] = []
     private var lineInbox: [(Date, String)] = []
     private var stopRequested = false
+    private var pausedBySwitchAtStop = false  // engine thread only: a switch left Music paused when stop() came
     private var logProcess: Process?       // the `log stream` that feeds lineInbox
     private var logProcessStart = Date()
     private var lastStreamLineAt: Date?    // when the stream last delivered a line
@@ -939,7 +940,8 @@ final class VirtualDeviceEngine {
 
     /// Every exit path: IO stopped, DAC mixable and released, scalar reset, default output restored.
     private func tearDown(restoreDefault: Bool, resumeMusic: Bool) {
-        let wasPlaying = resumeMusic && musicPlaying()
+        let wasPlaying = resumeMusic && (musicPlaying() || pausedBySwitchAtStop)
+        pausedBySwitchAtStop = false
         if wasPlaying { _ = scripts.pause(); _ = wait(1) { !self.playing } }
         if let p = procA {
             AudioDeviceStop(ls, p)
@@ -2061,6 +2063,9 @@ final class VirtualDeviceEngine {
         let seg = outSegmentAt.exchange(-1, ordering: .acquiringAndReleasing)
         recorder?.segmentOut(seg >= 0 ? seg : outFrames.load(ordering: .acquiring), r)
         resetLock()
+        // stop() waits 20 s for this thread and then restores the output itself; a switch that was
+        // blocked in CoreAudio past that must not pick the virtual output and play Music again
+        if stoppedDuringSwitch(musicPaused: !listenerPaused) { return }
         if listenerPaused {
             // as the play path does: the device poll would take a default moved during the switch
             // for the listener's pick and follow it
@@ -2082,12 +2087,22 @@ final class VirtualDeviceEngine {
         // scales with it. 0.001 is a real seek (resumed at 1.4 ms on the bench).
         if startPos < 2 { startPos = 0.001 }
         _ = scripts.setPosition(startPos)
+        if stoppedDuringSwitch(musicPaused: true) { return }
         reclaimDefault() // never let Music start on whatever coreaudiod fell back to
+        if stoppedDuringSwitch(musicPaused: true) { return }
         _ = scripts.play()
         // the play re-creates this track's decoder: that line is its own, not a next track's
         ownLinesUntil = max(ownLinesUntil ?? .distantPast, Date().addingTimeInterval(1))
         log("  rewound to \(String(format: "%.3f", startPos)) (was \(String(format: "%.3f", pos)), played ~\(String(format: "%.3f", played)) s), play; switch \(switches) done \(ms(t)) after the request")
         confirmPlaying()
+    }
+
+    /// The engine was turned off while a switch ran. Music was paused by the switch: the teardown plays it again.
+    private func stoppedDuringSwitch(musicPaused: Bool) -> Bool {
+        guard shouldStop else { return false }
+        if musicPaused { pausedBySwitchAtStop = true }
+        log("  turned off during the switch; not selecting the virtual device or playing Music again")
+        return true
     }
 
     /// Music can end up paused after the switch's play: its late notices from our own pause arrive after
