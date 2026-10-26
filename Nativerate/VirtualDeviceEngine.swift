@@ -2052,13 +2052,15 @@ final class VirtualDeviceEngine {
         if change { outFormat.store(0, ordering: .releasing); applyRate(r) }
         recorder?.segmentIn(inFrames.load(ordering: .acquiring), r)
         let td = Date()
+        // Music's notices through the whole switch, up to the play: the listener's play and pause during
+        // the DAC wait and during the command wait decide whether Music is played again
+        var watch = StallPolicy.ListenerWatch(startedAt: t)
+        noticeTap = []
+        defer { noticeTap = nil }
         if change {
             let target = dacFormat(r) ?? AudioStreamBasicDescription(mSampleRate: r, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 0, mBitsPerChannel: 0, mReserved: 0)
             // A DAC stuck in a restart loop (MT 48: 45-55 s after a 44.1 -> 96 kHz switch) runs at ~36% of real
             // time: playing into it dropped audio and left the ring full. Music stays paused until it settles.
-            var watch = StallPolicy.ListenerWatch(startedAt: t)
-            noticeTap = []
-            defer { noticeTap = nil }
             let ready = StallPolicy.settle(first: 12, cancelled: { [unowned self] in self.shouldStop }, attempt: { [unowned self] timeout in
                 DeviceFormat.waitUntilReady(self.dac, format: target, checkBitDepth: target.mBitsPerChannel != 0, timeout: timeout, cancelled: {
                     self.pump() // Music's notices: the listener's play and pause during the wait
@@ -2083,7 +2085,6 @@ final class VirtualDeviceEngine {
                 log("  turned off during the DAC wait; switch abandoned\(resumeMusicOnStop ? "; Music plays again after the stop" : "")")
                 return
             }
-            if watch.listenerPaused { listenerPaused = true }
             log("  DAC \(ready ? "ready" : "NOT ready") after \(ms(td)): \(CA.formats(dacOut))")
             updateOutFormat()
         }
@@ -2093,6 +2094,16 @@ final class VirtualDeviceEngine {
         let seg = outSegmentAt.exchange(-1, ordering: .acquiringAndReleasing)
         recorder?.segmentOut(seg >= 0 ? seg : outFrames.load(ordering: .acquiring), r)
         resetLock()
+        pump()
+        _ = watch.observe(notices: noticeTap ?? [], now: Date())
+        noticeTap = []
+        if watch.listenerPaused { listenerPaused = true }
+        if !listenerPaused && !musicRunning() {
+            // the engine's own quit check is off during a switch; Music asked to play now would be relaunched
+            reclaimDefault()
+            log("  Music quit during the switch: not played again; switch \(switches) done \(ms(t)) after the request")
+            return
+        }
         if listenerPaused {
             // as the play path does: the device poll would take a default moved during the switch
             // for the listener's pick and follow it
