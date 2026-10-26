@@ -220,12 +220,12 @@ waitFor { !seen().isEmpty }
 check("abandon: late result goes to orphan", seen(), [5])
 check("abandon: late result is not left to take", late.take() == nil, true)
 
-let ready = BackgroundStart<Int>()
-_ = ready.begin({ 6 }, orphan: note)
+let waitingStart = BackgroundStart<Int>()
+_ = waitingStart.begin({ 6 }, orphan: note)
 Thread.sleep(forTimeInterval: 0.2)
-ready.abandon()
+waitingStart.abandon()
 check("abandon: a result already waiting goes to orphan", seen(), [5, 6])
-check("abandon: and is gone", ready.take() == nil, true)
+check("abandon: and is gone", waitingStart.take() == nil, true)
 
 let failedLate = BackgroundStart<Int>()
 let failRelease = DispatchSemaphore(value: 0)
@@ -233,18 +233,18 @@ _ = failedLate.begin({ failRelease.wait(); return nil }, orphan: note)
 failedLate.abandon(); failRelease.signal(); Thread.sleep(forTimeInterval: 0.2)
 check("abandon: a failed start orphans nothing", seen(), [5, 6])
 
-let again = BackgroundStart<Int>()
-let againRelease = DispatchSemaphore(value: 0)
-_ = again.begin({ againRelease.wait(); return 8 }, orphan: note)
-again.abandon()
-check("abandon: a new start is accepted", again.begin({ 9 }, orphan: note), true)
-var g: Int?? = nil
-waitFor { g = again.take(); return g != nil }
-check("abandon: new start's result is taken", g == .some(.some(9)), true)
-againRelease.signal()
+let reused = BackgroundStart<Int>()
+let reusedRelease = DispatchSemaphore(value: 0)
+_ = reused.begin({ reusedRelease.wait(); return 8 }, orphan: note)
+reused.abandon()
+check("abandon: a new start is accepted", reused.begin({ 9 }, orphan: note), true)
+var gotReused: Int?? = nil
+waitFor { gotReused = reused.take(); return gotReused != nil }
+check("abandon: new start's result is taken", gotReused == .some(.some(9)), true)
+reusedRelease.signal()
 waitFor { seen().contains(8) }
 check("abandon: old start's result still orphaned, not taken", seen(), [5, 6, 8])
-check("abandon: nothing stale to take", again.take() == nil, true)
+check("abandon: nothing stale to take", reused.take() == nil, true)
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
