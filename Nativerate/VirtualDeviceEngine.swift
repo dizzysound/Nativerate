@@ -585,6 +585,7 @@ final class VirtualDeviceEngine {
             Thread.sleep(forTimeInterval: 0.01)
         }
         tearDown(restoreDefault: true, resumeMusic: true)
+        othersBuild.abandon()
         MusicSettingsCheck.shared.clear()
         recorder?.finish()
         log("engine stopped")
@@ -1173,9 +1174,9 @@ final class VirtualDeviceEngine {
         othersLaunched = (d, r)
         othersLaunchedAt = Date(); othersSlowLogged = false
         let player = others
-        othersBuild.begin { [weak self] in
+        othersBuild.begin({ [weak self] in
             player.prepare(device: d, rate: r, log: { self?.log($0) })
-        }
+        }, orphan: { player.discardLate($0) })
     }
 
     /// Engine thread, every 0.5 s: takes over the player the background start built.
@@ -2832,6 +2833,9 @@ final class OthersPlayer {
         }
         log("other apps -> \(CA.string(b.device, kAudioObjectPropertyName)) at \(Int(b.rate)) Hz (AVAudioEngine + varispeed; target fill \(b.target) frames)")
     }
+
+    /// Any thread: a player that finished building after the engine loop ended.
+    func discardLate(_ b: Built) { b.engine.stop() }
 
     /// Engine thread: a built player nobody wants any more.
     func discard(_ b: Built) {

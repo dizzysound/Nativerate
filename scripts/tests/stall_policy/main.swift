@@ -204,5 +204,47 @@ check("start: a failed start delivers nil, not 'still running'", { () -> Bool in
 }(), true)
 check("start: begin accepted again", bs.begin { 1 }, true)
 
+// engine loop ends while the start is still blocked: the late result is handed to orphan, once, never taken
+let orphans = NSLock(); var orphaned: [Int] = []
+func note(_ v: Int) { orphans.lock(); orphaned.append(v); orphans.unlock() }
+func seen() -> [Int] { orphans.lock(); defer { orphans.unlock() }; return orphaned }
+func waitFor(_ f: () -> Bool) { for _ in 0..<200 { if f() { return }; Thread.sleep(forTimeInterval: 0.01) } }
+let late = BackgroundStart<Int>()
+let lateRelease = DispatchSemaphore(value: 0)
+_ = late.begin({ lateRelease.wait(); return 5 }, orphan: note)
+late.abandon()
+check("abandon: free at once while the work hangs", late.isBusy, false)
+check("abandon: nothing orphaned yet", seen(), [])
+lateRelease.signal()
+waitFor { !seen().isEmpty }
+check("abandon: late result goes to orphan", seen(), [5])
+check("abandon: late result is not left to take", late.take() == nil, true)
+
+let ready = BackgroundStart<Int>()
+_ = ready.begin({ 6 }, orphan: note)
+Thread.sleep(forTimeInterval: 0.2)
+ready.abandon()
+check("abandon: a result already waiting goes to orphan", seen(), [5, 6])
+check("abandon: and is gone", ready.take() == nil, true)
+
+let failedLate = BackgroundStart<Int>()
+let failRelease = DispatchSemaphore(value: 0)
+_ = failedLate.begin({ failRelease.wait(); return nil }, orphan: note)
+failedLate.abandon(); failRelease.signal(); Thread.sleep(forTimeInterval: 0.2)
+check("abandon: a failed start orphans nothing", seen(), [5, 6])
+
+let again = BackgroundStart<Int>()
+let againRelease = DispatchSemaphore(value: 0)
+_ = again.begin({ againRelease.wait(); return 8 }, orphan: note)
+again.abandon()
+check("abandon: a new start is accepted", again.begin({ 9 }, orphan: note), true)
+var g: Int?? = nil
+waitFor { g = again.take(); return g != nil }
+check("abandon: new start's result is taken", g == .some(.some(9)), true)
+againRelease.signal()
+waitFor { seen().contains(8) }
+check("abandon: old start's result still orphaned, not taken", seen(), [5, 6, 8])
+check("abandon: nothing stale to take", again.take() == nil, true)
+
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
