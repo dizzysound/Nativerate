@@ -9,3 +9,5 @@ xcrun swiftc -o "$out/stall_policy" ../../Nativerate/StallPolicy.swift stall_pol
 "$out/stall_policy"
 xcrun swiftc -o "$out/engine_slot" ../../Nativerate/EngineSlot.swift engine_slot/main.swift
 "$out/engine_slot"
+xcrun swiftc -o "$out/osascript_runner" ../../Nativerate/OsascriptRunner.swift osascript_runner/main.swift
+"$out/osascript_runner"

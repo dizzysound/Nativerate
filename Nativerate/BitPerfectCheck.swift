@@ -166,13 +166,15 @@ final class BitPerfectCheck: ObservableObject {
     }
 
     private static func runScript(_ source: String) -> String? {
-        var error: NSDictionary?
-        let output = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue
-        if let error {
-            print("[BitPerfectCheck] AppleScript - \(error)")
-            return nil
+        switch OsascriptRunner.run(source, timeout: 10) {
+        case .output(let output):
+            return output
+        case .failed(let message):
+            print("[BitPerfectCheck] AppleScript - \(message)")
+        case .timedOut:
+            print("[BitPerfectCheck] AppleScript - timed out")
         }
-        return output
+        return nil
     }
 
     /// The device offers PCM formats, all of them float (no integer format to play).
