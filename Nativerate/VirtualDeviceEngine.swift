@@ -3671,8 +3671,7 @@ final class MusicSettingsCheck: ObservableObject {
     /// Main thread; the AppleScript runs off it.
     func setMusicVolumeTo100() {
         DispatchQueue.global(qos: .userInitiated).async {
-            var err: NSDictionary?
-            NSAppleScript(source: "tell application \"Music\" to set sound volume to 100")?.executeAndReturnError(&err)
+            _ = OsascriptRunner.run("tell application \"Music\" to set sound volume to 100", timeout: 10)
             self.recheck.store(1, ordering: .releasing)
         }
     }

@@ -106,13 +106,17 @@ enum LocalTrack {
 
     /// nil on error; "" when the script succeeded without returning text (e.g. "pause").
     static func runScript(_ source: String) -> String? {
-        var error: NSDictionary?
-        let output = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue
-        if let error = error {
-            print("[APPLESCRIPT] - \(error)")
+        let output: String
+        switch OsascriptRunner.run(source, timeout: 10) {
+        case .output(let text):
+            output = text
+        case .failed(let message):
+            print("[APPLESCRIPT] - \(message)")
+            return nil
+        case .timedOut:
+            print("[APPLESCRIPT] - timed out")
             return nil
         }
-        if output == "missing value" { return nil }
-        return output ?? ""
+        return output == "missing value" ? nil : output
     }
 }
