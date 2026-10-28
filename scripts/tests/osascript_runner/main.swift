@@ -7,6 +7,8 @@ func check(_ name: String, _ ok: Bool, _ detail: @autoclosure () -> String = "")
 
 check("output", OsascriptRunner.run("return \"100\" as string", timeout: 10) == .output("100"))
 
+check("edge whitespace kept", OsascriptRunner.run("return \" /tmp/x \"", timeout: 10) == .output(" /tmp/x "))
+
 if case .failed = OsascriptRunner.run("this is not applescript (", timeout: 10) {} else { check("syntax error fails", false) }
 
 let started = Date()

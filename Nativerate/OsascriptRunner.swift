@@ -42,7 +42,9 @@ enum OsascriptRunner {
             return .timedOut
         }
         drained.wait()
-        let stdout = String(decoding: outData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        // osascript appends one line terminator to the result; keep any other edge whitespace (file paths).
+        var stdout = String(decoding: outData, as: UTF8.self)
+        if stdout.hasSuffix("\n") { stdout.removeLast() }
         let stderr = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return process.terminationStatus == 0 ? .output(stdout) : .failed(stderr.isEmpty ? "exit \(process.terminationStatus)" : stderr)
     }
