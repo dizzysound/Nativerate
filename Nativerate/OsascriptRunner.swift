@@ -4,7 +4,7 @@ import Foundation
 /// execution from a background queue crashed (EXC_BAD_ACCESS in TUASVector::_AddElement); a child process
 /// is safe from any thread, can't corrupt this process, and a hung target app costs a timeout, not the UI.
 enum OsascriptRunner {
-    enum Outcome: Equatable {
+    enum Outcome: Hashable {
         case output(String)
         case failed(String)
         case timedOut
