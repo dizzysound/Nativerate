@@ -38,7 +38,7 @@ check("matched, downloaded", SourceInference.isSubscriptionStream(cloud: "matche
 check("uploaded", SourceInference.isSubscriptionStream(cloud: "uploaded", localFile: false), false)
 check("purchased", SourceInference.isSubscriptionStream(cloud: "purchased", localFile: true), false)
 
-// Music's Sound Check line (pastor Mac, macOS 27.2, 2026-10-29): on with a scalar below 1 scales the samples
+// Music's Sound Check line: on with a scalar below 1 scales the samples
 let onLine = "2026-10-29 11:21:07.748 Df Music[37604:1d7372] [com.apple.coreaudio:aqme]        MEMixerChannel.cpp:4969  ionc@0x797c9b9400 offline false, Sound Check on, flags 0x0, err 0, scalar 0.434"
 let offLine = "2026-10-29 10:59:02.100 Df Music[37604:1d7372] [com.apple.coreaudio:aqme]        MEMixerChannel.cpp:4969  ionc@0x797c9b9400 offline false, Sound Check off, flags 0x0, err 0, scalar 1.000"
 check("Sound Check on line parses", SoundCheckLine.parse(onLine) == SoundCheckLine(on: true, scalar: 0.434), true)

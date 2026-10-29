@@ -35,9 +35,8 @@ enum SourceInference {
 }
 
 /// Music's "Sound Check on, flags 0x0, err 0, scalar 0.434" line (com.apple.coreaudio, MEMixerChannel): the gain
-/// Music applies to a track's samples. On macOS 27 the switch is not in Music's preferences (pastor Mac,
-/// 2026-10-29: `optimizeSongVolume` false while the log says on, scalars 0.434 to 0.866), so the log is the
-/// only place to read it.
+/// Music applies to a track's samples. The log shows what Music actually applied, which can differ from
+/// `optimizeSongVolume` until Music restarts after the preference changes.
 struct SoundCheckLine: Equatable {
     let on: Bool
     let scalar: Double
