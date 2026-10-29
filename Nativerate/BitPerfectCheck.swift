@@ -35,6 +35,7 @@ final class BitPerfectCheck: ObservableObject {
     private var deviceObservers = [NSObjectProtocol]()
     private var othersRouteSink: AnyCancellable?
     private var offGridSink: AnyCancellable?
+    private var soundCheckSink: AnyCancellable?
     private var nearGridSink: AnyCancellable?
     private var dacSink: AnyCancellable?
     private var softwareVolumeSink: AnyCancellable?
@@ -56,6 +57,9 @@ final class BitPerfectCheck: ObservableObject {
         }
         // Exclusive Mode's other-apps route (speakers, muted, or mixed into Music with an old plug-in)
         othersRouteSink = RendererOutput.shared.$othersRoute.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.refreshAfterDeviceChange()
+        }
+        soundCheckSink = RendererOutput.shared.$soundCheck.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
             self?.refreshAfterDeviceChange()
         }
         offGridSink = RendererOutput.shared.$offGrid.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
@@ -95,8 +99,9 @@ final class BitPerfectCheck: ObservableObject {
         let offGrid = RendererOutput.shared.offGrid
         let nearGrid = RendererOutput.shared.nearGrid
         let softwareVolume = RendererOutput.shared.softwareVolume
+        let soundCheck = RendererOutput.shared.soundCheck
         queue.async { [weak self] in
-            var items = Self.check(outputDevice: device)
+            var items = Self.check(outputDevice: device, soundCheck: soundCheck)
             if let softwareVolume { items.append(Item(id: "softwareVolume", ok: false, text: softwareVolume)) }
             if let others { items.append(Item(id: "otherApps", ok: others.ok, text: others.text)) }
             if offGrid { items.append(Item(id: "offGrid", ok: false, text: "Samples aren't bit-exact before the DAC (they fit no 16- or 24-bit grid): Music volume, Sound Check, EQ or rate conversion")) }
@@ -115,7 +120,7 @@ final class BitPerfectCheck: ObservableObject {
     }
 
     // Preference keys and values observed on macOS 26.6.2 by toggling each setting in Music.
-    private static func check(outputDevice: AudioObjectID?) -> [Item] {
+    private static func check(outputDevice: AudioObjectID?, soundCheck: SoundCheckLine?) -> [Item] {
         var items = [Item]()
 
         if !isMusicRunning {
@@ -135,9 +140,18 @@ final class BitPerfectCheck: ObservableObject {
         // present and 1 when on, absent when off
         let enhancer = (musicPreference("soundEnhancerEnabled") as? Bool) ?? false
         items.append(Item(id: "enhancer", ok: !enhancer, text: enhancer ? "Sound Enhancer on" : "Sound Enhancer off"))
-        // 0 when off; absent when on
-        let soundCheckOff = (musicPreference("optimizeSongVolume") as? Int) == 0
-        items.append(Item(id: "soundCheck", ok: soundCheckOff, text: soundCheckOff ? "Sound Check off" : "Sound Check may be on (changes levels)"))
+        if let soundCheck {
+            // macOS 27 keeps the switch out of the preferences (pastor Mac: the preference read off while Music
+            // scaled every track), so Music's own log line decides when the engine has seen one
+            let scalar = String(format: "%.3f", soundCheck.scalar)
+            items.append(Item(id: "soundCheck", ok: !soundCheck.changesSamples,
+                              text: soundCheck.changesSamples ? "Sound Check on: Music scales this track's samples by \(scalar) (changes levels)"
+                                  : soundCheck.on ? "Sound Check on, but it leaves this track's level alone (scalar \(scalar))" : "Sound Check off"))
+        } else {
+            // 0 when off; absent when on
+            let soundCheckOff = (musicPreference("optimizeSongVolume") as? Int) == 0
+            items.append(Item(id: "soundCheck", ok: soundCheckOff, text: soundCheckOff ? "Sound Check off" : "Sound Check may be on (changes levels)"))
+        }
         // 30 when Off; absent when Automatic
         let atmosOff = (musicPreference("preferredDolbyAtmosPlaySetting") as? Int) == 30
         items.append(Item(id: "atmos", ok: atmosOff, text: atmosOff ? "Dolby Atmos off" : "Dolby Atmos not Off (can play the Atmos mix instead of lossless stereo)"))

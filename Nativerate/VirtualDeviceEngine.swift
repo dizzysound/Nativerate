@@ -148,6 +148,7 @@ final class VirtualDeviceEngine {
     private let inboxLock = NSLock()
     private var infoInbox: [(Date, [AnyHashable: Any])] = []
     private var lineInbox: [(Date, String)] = []
+    private var soundChecks = SoundCheckHistory()  // Music's Sound Check lines from the same stream
     private var stopRequested = false
     private var stopAbandoned = false     // stop() gave up waiting for the thread and restored the output itself
     private var pausedBySwitchAtStop = false  // engine thread only: a switch left Music paused when stop() came
@@ -375,7 +376,8 @@ final class VirtualDeviceEngine {
         case .begin: break
         }
         print("[Exclusive Mode] virtual-device engine: start requested")
-        inboxLock.lock(); stopRequested = false; stopAbandoned = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
+        inboxLock.lock(); stopRequested = false; stopAbandoned = false; infoInbox = []; lineInbox = []; soundChecks.clear(); feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
+        RendererOutput.shared.set(soundCheck: nil)
         observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             self.inboxLock.lock(); self.infoInbox.append((Date(), note.userInfo ?? [:])); self.inboxLock.unlock()
@@ -430,7 +432,7 @@ final class VirtualDeviceEngine {
     private func startDecoderLog() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        p.arguments = ["stream", "--style", "compact", "--predicate", "process == \"Music\" AND eventMessage CONTAINS \"Input format:\""]
+        p.arguments = ["stream", "--style", "compact", "--predicate", "process == \"Music\" AND (eventMessage CONTAINS \"Input format:\" OR eventMessage CONTAINS \"Sound Check o\")"]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
@@ -447,7 +449,14 @@ final class VirtualDeviceEngine {
             }
             guard !lines.isEmpty else { return }
             let now = Date()
-            self.inboxLock.lock(); self.lineInbox += lines.map { (now, $0) }; self.lastStreamLineAt = now; self.inboxLock.unlock()
+            var newest: SoundCheckLine?
+            self.inboxLock.lock()
+            for line in lines {
+                if let sc = SoundCheckLine.parse(line) { self.soundChecks.record(sc, at: now); newest = sc } else { self.lineInbox.append((now, line)) }
+            }
+            self.lastStreamLineAt = now
+            self.inboxLock.unlock()
+            if let newest { RendererOutput.shared.set(soundCheck: newest) }
         }
         // Pastor, 2026-10-18: after a 3 h idle no decoder line reached the engine, though Music logged them
         // (Old Brown Shoe was judged lossy for want of its own line). Whether the stream ended or stalled is
@@ -600,7 +609,10 @@ final class VirtualDeviceEngine {
             }
             if !inRoutine, settingsCheckDue || MusicSettingsCheck.shared.recheck.exchange(0, ordering: .acquiringAndReleasing) != 0 {
                 settingsCheckDue = false
-                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), log: { [unowned self] in self.log($0) })
+                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), soundCheckOn: { [unowned self] in
+                    self.inboxLock.lock(); defer { self.inboxLock.unlock() }
+                    return self.soundChecks.latest.map { $0.on }
+                }, log: { [unowned self] in self.log($0) })
             }
             if now.timeIntervalSince(lastStatus) >= 30 {
                 lastStatus = now
@@ -1574,8 +1586,12 @@ final class VirtualDeviceEngine {
         let sc = CFPreferencesCopyAppValue("optimizeSongVolume" as CFString, app) as? NSNumber
         let en = CFPreferencesCopyAppValue("soundEnhancerEnabled" as CFString, app) as? NSNumber
         let vol = scripts.volume()
-        let alone = sc?.intValue == 0 && (en?.intValue ?? 0) == 0 && vol == 100
-        log("source depth: Music's settings: Sound Check \(sc.map { "\($0)" } ?? "absent (on)"), Sound Enhancer \(en.map { "\($0)" } ?? "absent (off)"), volume \(vol.map(String.init) ?? "?"): \(alone ? "nothing readable changes the samples" : "may change them")")
+        // macOS 27 keeps the Sound Check switch out of the preferences (it reads off while Music scales every
+        // track): Music's own log line, with the scalar, is what counts
+        inboxLock.lock(); let scLog = soundChecks.changesSamples(now: Date()); let scLatest = soundChecks.latest; inboxLock.unlock()
+        let alone = sc?.intValue == 0 && (en?.intValue ?? 0) == 0 && vol == 100 && scLog != true
+        let scText = scLatest.map { "Music's log: Sound Check \($0.on ? "on" : "off"), scalar \(String(format: "%.3f", $0.scalar))" } ?? "no Sound Check line in Music's log"
+        log("source depth: Music's settings: Sound Check \(sc.map { "\($0)" } ?? "absent (on)"), Sound Enhancer \(en.map { "\($0)" } ?? "absent (off)"), volume \(vol.map(String.init) ?? "?"), \(scText): \(alone ? "nothing readable changes the samples" : "may change them")")
         return alone
     }
 
@@ -3614,7 +3630,7 @@ final class MusicSettingsCheck: ObservableObject {
     private var window: NSWindow?
 
     /// Engine thread.
-    func check(_ scripts: RendererScripts, musicRunning: Bool, log: (String) -> Void) {
+    func check(_ scripts: RendererScripts, musicRunning: Bool, soundCheckOn: () -> Bool?, log: (String) -> Void) {
         guard musicRunning else { return }
         let app = "com.apple.Music" as CFString
         CFPreferencesAppSynchronize(app)
@@ -3624,7 +3640,7 @@ final class MusicSettingsCheck: ObservableObject {
             found.append(.init(id: "transitions", what: "AutoMix or Crossfade is on",
                                fix: "Music > Settings > Playback: turn off AutoMix and Crossfade. They blend one track into the next, so a sample-rate switch can't happen cleanly."))
         }
-        if let v = pref("optimizeSongVolume"), v != 0 {
+        if (pref("optimizeSongVolume") ?? 0) != 0 || soundCheckOn() == true {
             found.append(.init(id: "soundcheck", what: "Sound Check is on",
                                fix: "Music > Settings > Playback: turn off Sound Check. It changes each track's level, so the output isn't bit-perfect."))
         }
@@ -3749,6 +3765,9 @@ final class RendererOutput: ObservableObject {
     @Published private(set) var sourceLossy = false
     /// Music's samples fit neither the 16- nor the 24-bit grid on a lossless track: Music changes them.
     @Published private(set) var offGrid = false
+    /// Music's newest Sound Check line (its scalar scales the samples); nil until one is seen. The preference
+    /// that held the switch before macOS 27 reads off there while Music still scales.
+    @Published private(set) var soundCheck: SoundCheckLine?
 
     /// Any thread.
     /// The depth (16 or 24) the track measured near rather than on its grid: rounded in the playback
@@ -3758,6 +3777,10 @@ final class RendererOutput: ObservableObject {
     /// Any thread.
     func set(nearGrid v: Int) {
         DispatchQueue.main.async { if self.nearGrid != v { self.nearGrid = v } }
+    }
+
+    func set(soundCheck v: SoundCheckLine?) {
+        DispatchQueue.main.async { if self.soundCheck != v { self.soundCheck = v } }
     }
 
     func set(offGrid v: Bool) {
