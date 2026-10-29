@@ -43,13 +43,17 @@ struct SoundCheckLine: Equatable {
     }
 }
 
-/// The Sound Check lines Music logged since the engine started. Music sets the next track's mixer up while the
-/// current one plays, so the newest line may belong to the next track: the samples count as changed when the
-/// newest line or any line in the last `window` seconds says so (the safe side: it keeps a lossless track from
-/// being labeled lossy for samples Music scaled).
+/// The Sound Check lines Music logged since the engine started, tied to the playing track. Music sets the next
+/// track's mixer up while the current one plays, so the newest line may belong to the next track. A track's
+/// lines are the newest one logged before it started (its setup, pre-rolled or not) and any within `grace`
+/// seconds after (a setup that came after Playing); later lines are the next track's. Scaled wins among a
+/// track's lines (it keeps a lossless track from being labeled lossy for samples Music scaled). Without a
+/// track start, or a line for the track, nothing is known.
 struct SoundCheckHistory {
     private var entries: [(at: Date, line: SoundCheckLine)] = []
+    private var trackStart: Date?
 
+    /// The newest line, whichever track it is for: the Sound Check switch itself, not a track's scalar.
     var latest: SoundCheckLine? { entries.last?.line }
 
     mutating func record(_ line: SoundCheckLine, at: Date) {
@@ -57,11 +61,19 @@ struct SoundCheckHistory {
         if entries.count > 50 { entries.removeFirst(entries.count - 50) }
     }
 
-    mutating func clear() { entries = [] }
+    mutating func trackStarted(at: Date) { trackStart = at }
 
-    /// nil: no line seen, so nothing is known.
-    func changesSamples(now: Date, window: TimeInterval = 60) -> Bool? {
-        guard let last = entries.last else { return nil }
-        return last.line.changesSamples || entries.contains { now.timeIntervalSince($0.at) <= window && $0.line.changesSamples }
+    mutating func clear() { entries = []; trackStart = nil }
+
+    /// The line that stands for the playing track; nil when none is known.
+    func forTrack(grace: TimeInterval = 5) -> SoundCheckLine? {
+        guard let start = trackStart else { return nil }
+        var lines: [SoundCheckLine] = []
+        if let before = entries.last(where: { $0.at <= start }) { lines.append(before.line) }
+        lines += entries.filter { $0.at > start && $0.at.timeIntervalSince(start) <= grace }.map { $0.line }
+        return lines.first { $0.changesSamples } ?? lines.last
     }
+
+    /// nil: no line for the playing track, so nothing is known.
+    func changesSamples(grace: TimeInterval = 5) -> Bool? { forTrack(grace: grace)?.changesSamples }
 }

@@ -449,14 +449,20 @@ final class VirtualDeviceEngine {
             }
             guard !lines.isEmpty else { return }
             let now = Date()
-            var newest: SoundCheckLine?
+            var sawSoundCheck = false
             self.inboxLock.lock()
+            let onBefore = self.soundChecks.latest?.on
             for line in lines {
-                if let sc = SoundCheckLine.parse(line) { self.soundChecks.record(sc, at: now); newest = sc } else { self.lineInbox.append((now, line)) }
+                if let sc = SoundCheckLine.parse(line) { self.soundChecks.record(sc, at: now); sawSoundCheck = true } else { self.lineInbox.append((now, line)) }
             }
             self.lastStreamLineAt = now
+            let onAfter = self.soundChecks.latest?.on
             self.inboxLock.unlock()
-            if let newest { RendererOutput.shared.set(soundCheck: newest) }
+            if sawSoundCheck {
+                self.publishSoundCheck()
+                // the switch may read off in the preferences (macOS 27) and only show here, after the check for the track ran
+                if onAfter != onBefore { MusicSettingsCheck.shared.recheck.store(1, ordering: .releasing) }
+            }
         }
         // Pastor, 2026-10-18: after a 3 h idle no decoder line reached the engine, though Music logged them
         // (Old Brown Shoe was judged lossy for want of its own line). Whether the stream ended or stalled is
@@ -1346,6 +1352,7 @@ final class VirtualDeviceEngine {
             return
         }
         lastTrackID = pid
+        soundCheckTrackStarted(at: at)
         settingsCheckDue = true // after the rate decision below: the loop runs it
         lateArmAt = nil
         lossyTrackAt = nil; lossyStartAt = nil
@@ -1577,6 +1584,24 @@ final class VirtualDeviceEngine {
         publishSource()
     }
 
+    /// Any thread: the playing track's Sound Check line (not the newest, which may be the next track's) to the menu.
+    private func publishSoundCheck() {
+        inboxLock.lock(); let line = soundChecks.forTrack(); inboxLock.unlock()
+        RendererOutput.shared.set(soundCheck: line)
+    }
+
+    /// A new track began playing: lines logged from here on (past a short grace) are the next track's.
+    private func soundCheckTrackStarted(at: Date) {
+        inboxLock.lock(); soundChecks.trackStarted(at: at); inboxLock.unlock()
+        publishSoundCheck()
+    }
+
+    /// Music quit: its lines and scalars are the old process's.
+    private func forgetSoundChecks() {
+        inboxLock.lock(); soundChecks.clear(); inboxLock.unlock()
+        RendererOutput.shared.set(soundCheck: nil)
+    }
+
     /// Music's readable settings that change samples are all off: volume 100, Sound Check and Sound
     /// Enhancer off (EQ can't be read; the Bit-perfect check asks to check it).
     private func musicLeavesSamplesAlone() -> Bool {
@@ -1588,9 +1613,9 @@ final class VirtualDeviceEngine {
         let vol = scripts.volume()
         // macOS 27 keeps the Sound Check switch out of the preferences (it reads off while Music scales every
         // track): Music's own log line, with the scalar, is what counts
-        inboxLock.lock(); let scLog = soundChecks.changesSamples(now: Date()); let scLatest = soundChecks.latest; inboxLock.unlock()
+        inboxLock.lock(); let scLog = soundChecks.changesSamples(); let scLatest = soundChecks.forTrack(); inboxLock.unlock()
         let alone = sc?.intValue == 0 && (en?.intValue ?? 0) == 0 && vol == 100 && scLog != true
-        let scText = scLatest.map { "Music's log: Sound Check \($0.on ? "on" : "off"), scalar \(String(format: "%.3f", $0.scalar))" } ?? "no Sound Check line in Music's log"
+        let scText = scLatest.map { "Music's log for the track: Sound Check \($0.on ? "on" : "off"), scalar \(String(format: "%.3f", $0.scalar))" } ?? "no Sound Check line in Music's log"
         log("source depth: Music's settings: Sound Check \(sc.map { "\($0)" } ?? "absent (on)"), Sound Enhancer \(en.map { "\($0)" } ?? "absent (off)"), volume \(vol.map(String.init) ?? "?"), \(scText): \(alone ? "nothing readable changes the samples" : "may change them")")
         return alone
     }
@@ -2015,7 +2040,7 @@ final class VirtualDeviceEngine {
         }
         setWantBits(logBits, lossless: !sourceLossy)
         let target = rate.flatMap { neededRate($0) } ?? curRate
-        if pid != lastTrackID { trackRate = rate }
+        if pid != lastTrackID { trackRate = rate; soundCheckTrackStarted(at: at) }
         lastTrackID = pid
         lastNewTrackAt = at
         inRoutine = false
@@ -2320,12 +2345,13 @@ final class VirtualDeviceEngine {
     private func checkDevicesAndMusic() {
         guard !inRoutine else { return }
         if steppedAside {
-            if lastTrackID != nil, !musicRunning() { log("Music quit (engine stepped aside)"); lastTrackID = nil }
+            if lastTrackID != nil, !musicRunning() { log("Music quit (engine stepped aside)"); lastTrackID = nil; forgetSoundChecks() }
             return
         }
         if lastTrackID != nil, !musicRunning() {
             log("Music quit; the next play waits at the gate for its own decoder line")
             lastTrackID = nil
+            forgetSoundChecks()
             playing = false
             // Relaunched Music played ~1.6 s before posting Playing (Babyface bench), and the last
             // decoder lines belong to the old session (one was taken 264 s later): gate the next
