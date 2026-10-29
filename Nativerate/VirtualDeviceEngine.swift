@@ -460,7 +460,7 @@ final class VirtualDeviceEngine {
             self.inboxLock.unlock()
             if sawSoundCheck {
                 self.publishSoundCheck()
-                // the switch may read off in the preferences (macOS 27) and only show here, after the check for the track ran
+                // the switch may read off in the preferences and only show here, after the check for the track ran
                 if scaledAfter != scaledBefore { MusicSettingsCheck.shared.recheck.store(1, ordering: .releasing) }
             }
         }
@@ -1608,8 +1608,8 @@ final class VirtualDeviceEngine {
         let sc = CFPreferencesCopyAppValue("optimizeSongVolume" as CFString, app) as? NSNumber
         let en = CFPreferencesCopyAppValue("soundEnhancerEnabled" as CFString, app) as? NSNumber
         let vol = scripts.volume()
-        // macOS 27 keeps the Sound Check switch out of the preferences (it reads off while Music scales every
-        // track): Music's own log line, with the scalar, is what counts
+        // Music's own log line, with the scalar, is what counts: the preference can read off while Music
+        // still scales (until Music restarts after the preference changes)
         inboxLock.lock(); let scLog = soundChecks.changesSamples(); let scLatest = soundChecks.forTrack(); inboxLock.unlock()
         let alone = sc?.intValue == 0 && (en?.intValue ?? 0) == 0 && vol == 100 && scLog != true
         let scText = scLatest.map { "Music's log for the track: Sound Check \($0.on ? "on" : "off"), scalar \(String(format: "%.3f", $0.scalar))" } ?? "no Sound Check line in Music's log"
@@ -3790,7 +3790,7 @@ final class RendererOutput: ObservableObject {
     /// Music's samples fit neither the 16- nor the 24-bit grid on a lossless track: Music changes them.
     @Published private(set) var offGrid = false
     /// Music's newest Sound Check line (its scalar scales the samples); nil until one is seen. The preference
-    /// that held the switch before macOS 27 reads off there while Music still scales.
+    /// can read off while Music still scales, until Music restarts.
     @Published private(set) var soundCheck: SoundCheckLine?
 
     /// Any thread.

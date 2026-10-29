@@ -107,9 +107,8 @@ final class BitPerfectCheck: ObservableObject {
         let enhancer = (musicPreference("soundEnhancerEnabled") as? Bool) ?? false
         items.append(Item(id: "enhancer", ok: !enhancer, text: enhancer ? "Sound Enhancer on" : "Sound Enhancer off"))
         if let soundCheck {
-            // Music can scale a track by a Sound Check gain while its Sound Check setting is off (pastor Mac,
-            // macOS 27.2: setting unchecked, preference false, gSoundCheckEnabled 1, scalar 0.355), so the log
-            // line says what the samples got, and the setting says whether the user can do anything about it.
+            // The log line says what the samples got, and the setting says whether the user can act on it
+            // (a preference changed outside Music only takes effect after Music restarts).
             let scalar = String(format: "%.3f", soundCheck.scalar)
             let settingOn = ((musicPreference("optimizeSongVolume") as? Int) ?? 0) != 0
             let text: String
