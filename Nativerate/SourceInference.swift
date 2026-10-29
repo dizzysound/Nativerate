@@ -50,7 +50,7 @@ struct SoundCheckLine: Equatable {
 /// inherit) and any within `grace` seconds after it started (a setup that came after Playing); later lines are
 /// the next track's. A scaled line inside the previous track's grace is ambiguous (its late setup, or this
 /// track's pre-roll after a fast skip): it counts for this track only when the previous track already had a line
-/// before it started, so the previous track's late setup was not its only line. Scaled wins among a track's
+/// before it started (found the same way counts), so the previous track's late setup was not its only line. Scaled wins among a track's
 /// lines (it keeps a lossless track from being labeled lossy for samples Music scaled). Without a track start,
 /// or a line for the track, nothing is known.
 struct SoundCheckHistory {
@@ -72,7 +72,7 @@ struct SoundCheckHistory {
         previousTrackStart = trackStart
         previousHadLineBeforeStart = trackHadLineBeforeStart
         trackStart = at
-        trackHadLineBeforeStart = lineBeforeStart(at, after: previousTrackStart, grace: grace) != nil
+        trackHadLineBeforeStart = preStartLine(at, grace: grace) != nil
     }
 
     mutating func clear() {
@@ -85,15 +85,20 @@ struct SoundCheckHistory {
         return entries.last(where: { $0.at <= start && (floor == nil || $0.at > floor!) })?.line
     }
 
+    /// The line logged before `start` that is the track's own, including a scaled one the previous track's grace
+    /// window makes ambiguous. A track found that way still counts as having had a line before its start, so a
+    /// run of fast skips keeps the scaled signal.
+    private func preStartLine(_ start: Date, grace: TimeInterval) -> SoundCheckLine? {
+        if let before = lineBeforeStart(start, after: previousTrackStart, grace: grace) { return before }
+        guard let prev = previousTrackStart, previousHadLineBeforeStart else { return nil }
+        return entries.last(where: { $0.at > prev && $0.at <= start && $0.line.changesSamples })?.line
+    }
+
     /// The line that stands for the playing track; nil when none is known.
     func forTrack(grace: TimeInterval = 5) -> SoundCheckLine? {
         guard let start = trackStart else { return nil }
         var lines: [SoundCheckLine] = []
-        if let before = lineBeforeStart(start, after: previousTrackStart, grace: grace) {
-            lines.append(before)
-        } else if let prev = previousTrackStart, previousHadLineBeforeStart {
-            if let ambiguous = entries.last(where: { $0.at > prev && $0.at <= start && $0.line.changesSamples }) { lines.append(ambiguous.line) }
-        }
+        if let before = preStartLine(start, grace: grace) { lines.append(before) }
         lines += entries.filter { $0.at > start && $0.at.timeIntervalSince(start) <= grace }.map { $0.line }
         return lines.first { $0.changesSamples } ?? lines.last
     }
