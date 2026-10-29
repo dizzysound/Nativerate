@@ -50,7 +50,9 @@ struct SoundCheckLine: Equatable {
 /// inherit) and any within `grace` seconds after it started (a setup that came after Playing); later lines are
 /// the next track's. A scaled line inside the previous track's grace is ambiguous (its late setup, or this
 /// track's pre-roll after a fast skip): it counts for this track only when the previous track already had a line
-/// before it started (found the same way counts), so the previous track's late setup was not its only line. Scaled wins among a track's
+/// before it started (found the same way counts), so the previous track's late setup was not its only line. The
+/// first track start the engine sees has no previous setup window, so only a line within `firstStartWindow`
+/// seconds before it counts (an older one is the track that was playing when the engine started). Scaled wins among a track's
 /// lines (it keeps a lossless track from being labeled lossy for samples Music scaled). Without a track start,
 /// or a line for the track, nothing is known.
 struct SoundCheckHistory {
@@ -80,10 +82,14 @@ struct SoundCheckHistory {
         previousHadLineBeforeStart = false; trackHadLineBeforeStart = false
     }
 
+    /// With no earlier track start there is no floor to cut off the line of a track that was already playing when
+    /// the engine started, so such a line counts only when it is recent (`firstStartWindow`).
     private func lineBeforeStart(_ start: Date, after previous: Date?, grace: TimeInterval) -> SoundCheckLine? {
-        let floor = previous.map { $0.addingTimeInterval(grace) }
-        return entries.last(where: { $0.at <= start && (floor == nil || $0.at > floor!) })?.line
+        let floor = previous.map { $0.addingTimeInterval(grace) } ?? start.addingTimeInterval(-Self.firstStartWindow)
+        return entries.last(where: { $0.at <= start && $0.at > floor })?.line
     }
+
+    static let firstStartWindow: TimeInterval = 10
 
     /// The line logged before `start` that is the track's own, including a scaled one the previous track's grace
     /// window makes ambiguous. A track found that way still counts as having had a line before its start, so a
