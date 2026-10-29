@@ -53,13 +53,6 @@ struct SoundCheckLine: Equatable {
         guard let scalar = Double(digits) else { return nil }
         return SoundCheckLine(on: on, scalar: scalar)
     }
-
-    /// The Music settings window's "Sound Check is on". The preference counts when it is set (macOS 26). The log
-    /// counts only when the playing track's own line scales its samples: a bare "Sound Check on" is no switch,
-    /// since Music logs one per mixer channel and some (other items, scalar 1.000) say on with the setting off.
-    static func problem(preference: Int?, playingTrackScaled: Bool?) -> Bool {
-        (preference ?? 0) != 0 || playingTrackScaled == true
-    }
 }
 
 /// The Sound Check lines Music logged since the engine started, tied to the playing track. Music sets the next

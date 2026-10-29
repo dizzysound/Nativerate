@@ -615,10 +615,7 @@ final class VirtualDeviceEngine {
             }
             if !inRoutine, settingsCheckDue || MusicSettingsCheck.shared.recheck.exchange(0, ordering: .acquiringAndReleasing) != 0 {
                 settingsCheckDue = false
-                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), soundCheckScalesTrack: { [unowned self] in
-                    self.inboxLock.lock(); defer { self.inboxLock.unlock() }
-                    return self.soundChecks.changesSamples()
-                }, log: { [unowned self] in self.log($0) })
+                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), log: { [unowned self] in self.log($0) })
             }
             if now.timeIntervalSince(lastStatus) >= 30 {
                 lastStatus = now
@@ -3641,6 +3638,7 @@ final class VolumeForwarder {
 /// AppleScript (the "eqEnabled" preference disagreed with Music's own "EQ enabled"). A change in the
 /// set of problems is logged, shown at the top of the menu, posted as one notification, and opens a
 /// window with the fixes that stays until they're done (it closes itself when a check comes back clean).
+/// Only what the user can fix in Music counts: a gain Music applies with Sound Check off shows in the Bit-perfect check.
 final class MusicSettingsCheck: ObservableObject {
     struct Problem: Equatable, Identifiable {
         let id: String, what: String, fix: String
@@ -3656,7 +3654,7 @@ final class MusicSettingsCheck: ObservableObject {
     private var window: NSWindow?
 
     /// Engine thread.
-    func check(_ scripts: RendererScripts, musicRunning: Bool, soundCheckScalesTrack: () -> Bool?, log: (String) -> Void) {
+    func check(_ scripts: RendererScripts, musicRunning: Bool, log: (String) -> Void) {
         guard musicRunning else { return }
         let app = "com.apple.Music" as CFString
         CFPreferencesAppSynchronize(app)
@@ -3666,7 +3664,7 @@ final class MusicSettingsCheck: ObservableObject {
             found.append(.init(id: "transitions", what: "AutoMix or Crossfade is on",
                                fix: "Music > Settings > Playback: turn off AutoMix and Crossfade. They blend one track into the next, so a sample-rate switch can't happen cleanly."))
         }
-        if SoundCheckLine.problem(preference: pref("optimizeSongVolume"), playingTrackScaled: soundCheckScalesTrack()) {
+        if (pref("optimizeSongVolume") ?? 0) != 0 {
             found.append(.init(id: "soundcheck", what: "Sound Check is on",
                                fix: "Music > Settings > Playback: turn off Sound Check. It changes each track's level, so the output isn't bit-perfect."))
         }

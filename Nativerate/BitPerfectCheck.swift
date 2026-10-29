@@ -104,12 +104,19 @@ final class BitPerfectCheck: ObservableObject {
         let enhancer = (musicPreference("soundEnhancerEnabled") as? Bool) ?? false
         items.append(Item(id: "enhancer", ok: !enhancer, text: enhancer ? "Sound Enhancer on" : "Sound Enhancer off"))
         if let soundCheck {
-            // macOS 27 keeps the switch out of the preferences (pastor Mac: the preference read off while Music
-            // scaled every track), so Music's own log line decides when the engine has seen one
+            // Music can scale a track by a Sound Check gain while its Sound Check setting is off (pastor Mac,
+            // macOS 27.2: setting unchecked, preference false, gSoundCheckEnabled 1, scalar 0.355), so the log
+            // line says what the samples got, and the setting says whether the user can do anything about it.
             let scalar = String(format: "%.3f", soundCheck.scalar)
-            items.append(Item(id: "soundCheck", ok: !soundCheck.changesSamples,
-                              text: soundCheck.changesSamples ? "Sound Check on: Music scales this track's samples by \(scalar) (changes levels)"
-                                  : soundCheck.on ? "Sound Check on, but it leaves this track's level alone (scalar \(scalar))" : "Sound Check off"))
+            let settingOn = ((musicPreference("optimizeSongVolume") as? Int) ?? 0) != 0
+            let text: String
+            if soundCheck.changesSamples {
+                text = settingOn ? "Sound Check on: Music scales this track's samples by \(scalar) (changes levels)"
+                    : "Music scales this track's samples by \(scalar) (changes levels) although Sound Check is off in Music's settings; Nativerate can't switch this off"
+            } else {
+                text = soundCheck.on ? "Sound Check on, but it leaves this track's level alone (scalar \(scalar))" : "Sound Check off"
+            }
+            items.append(Item(id: "soundCheck", ok: !soundCheck.changesSamples, text: text))
         } else {
             // 0 when off; absent when on
             let soundCheckOff = (musicPreference("optimizeSongVolume") as? Int) == 0
