@@ -20,6 +20,18 @@ enum SourceInference {
         if trackStartedLossy { return !upgradedToLossless || musicLeavesSamplesAlone() }
         return !sourceKnown && newestDecoderLossy && musicLeavesSamplesAlone()
     }
+
+    /// Whether the current track is an Apple Music subscription stream, the only kind the Dolby Atmos setting
+    /// can change. Music marks one with cloud status "subscription" (also when it is downloaded). A track with
+    /// no file on disk and no cloud status at all is a stream whose library info Music leaves empty (pastor,
+    /// 2026-10-18). Local files and matched, uploaded or purchased tracks are not.
+    static func isSubscriptionStream(cloud: String, localFile: Bool) -> Bool {
+        switch cloud.lowercased() {
+        case "subscription": return true
+        case "", "missing value": return !localFile
+        default: return false
+        }
+    }
 }
 
 /// Music's "Sound Check on, flags 0x0, err 0, scalar 0.434" line (com.apple.coreaudio, MEMixerChannel): the gain
@@ -59,9 +71,6 @@ struct SoundCheckHistory {
     private var previousTrackStart: Date?
     private var previousHadLineBeforeStart = false
     private var trackHadLineBeforeStart = false
-
-    /// The newest line, whichever track it is for: the Sound Check switch itself, not a track's scalar.
-    var latest: SoundCheckLine? { entries.last?.line }
 
     mutating func record(_ line: SoundCheckLine, at: Date) {
         entries.append((at, line))

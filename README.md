@@ -57,7 +57,7 @@ With Exclusive Mode on, the menu shows the rate and the track's bit depth, for e
 for a lossy track (AAC or MP3), and "? bit" when the depth isn't known yet, for example when Music
 reused a decoder and logged nothing new for the track.
 
-The **Bit-perfect check** menu item reports whether your current path is bit-perfect and, if not, why.
+The **Bit-perfect check…** menu item opens a window that reports whether your current path is bit-perfect and, if not, why. It checks when you open it (and on Refresh), never in the background. The Dolby Atmos line shows only while an Apple Music subscription stream is the current track.
 
 **Proven bit-perfect at the digital output.** On macOS 27, we cabled an RME Babyface Pro FS's optical output back into its
 optical input and played test files through Music and Nativerate in Exclusive Mode. Every sample
@@ -73,6 +73,12 @@ plays what it receives to the DAC unchanged. The Bit-perfect check reports such 
 same measurement found Music's samples equal to the file's, 16 and 24 bit, and Nativerate's output
 equal to them. Both were recorded at the virtual device and compared against the decoded files. macOS 27 fixes the samples, but Music still does not switch the
 DAC's rate or take the DAC for itself; Nativerate does both, for Apple Music streams as well as local files.
+
+**On macOS 27.2 (Music 1.7), Music can apply Sound Check gain to Apple Music streams with Sound Check off.** On one Mac with Music's "Sound Check" box unchecked (`optimizeSongVolume` is false), Music's log still reported `gSoundCheckEnabled 1` and `Sound Check on, scalar` between 0.355 and 0.649 for catalog streams, and the samples reaching Nativerate were off the file's bit grid. The gain matches a loudness target of -16 LUFS: a track with -12.25 LUFS of loudness metadata and a logged scalar of 0.649 fits 10^((-16 - (-12.25)) / 20) = 0.6494. On a second Mac (macOS 27.0.1), library tracks with the box unchecked logged `gSoundCheckEnabled 0, scalar 1.000`. Why the two cases differ is not established; the item type (stream or library track) is a hypothesis. Nativerate cannot switch this off, so:
+
+- The Music settings window, its notification and the top menu line warn about Sound Check only when Music's own setting is on, because the user can act on that.
+- The Bit-perfect check window reports the scaling, with the scalar, as "Music scales this track's samples by X (changes levels) although Sound Check is off in Music's settings; Nativerate can't switch this off", and names it as the reason the samples are not bit-exact.
+- Music's Sound Check line is only written when a track starts, so the window cannot see a change made mid-track until the next track.
 
 <p align="center"><img src="docs/menu.png" width="307" alt="The Nativerate menu: 44.1 kHz on an AudioQuest DragonFly Black, with Exclusive Mode checked and Output device, Other apps and alerts, Bit-perfect check, Settings, About and Quit."></p>
 

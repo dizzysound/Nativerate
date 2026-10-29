@@ -27,6 +27,17 @@ var reads = 0
 _ = SourceInference.offGridIsLossy(trackStartedLossy: false, sourceKnown: false, newestDecoderLossy: false, musicLeavesSamplesAlone: { reads += 1; return true })
 check("settings not read without a lossy decoder", reads == 0, true)
 
+// Dolby Atmos is only a question for an Apple Music subscription stream
+check("subscription stream", SourceInference.isSubscriptionStream(cloud: "subscription", localFile: false), true)
+check("downloaded subscription track", SourceInference.isSubscriptionStream(cloud: "subscription", localFile: true), true)
+check("stream with empty library info", SourceInference.isSubscriptionStream(cloud: "", localFile: false), true)
+check("stream with missing value status", SourceInference.isSubscriptionStream(cloud: "missing value", localFile: false), true)
+check("local file, no cloud status", SourceInference.isSubscriptionStream(cloud: "", localFile: true), false)
+check("matched, not downloaded", SourceInference.isSubscriptionStream(cloud: "matched", localFile: false), false)
+check("matched, downloaded", SourceInference.isSubscriptionStream(cloud: "matched", localFile: true), false)
+check("uploaded", SourceInference.isSubscriptionStream(cloud: "uploaded", localFile: false), false)
+check("purchased", SourceInference.isSubscriptionStream(cloud: "purchased", localFile: true), false)
+
 // Music's Sound Check line (pastor Mac, macOS 27.2, 2026-10-29): on with a scalar below 1 scales the samples
 let onLine = "2026-10-29 11:21:07.748 Df Music[37604:1d7372] [com.apple.coreaudio:aqme]        MEMixerChannel.cpp:4969  ionc@0x797c9b9400 offline false, Sound Check on, flags 0x0, err 0, scalar 0.434"
 let offLine = "2026-10-29 10:59:02.100 Df Music[37604:1d7372] [com.apple.coreaudio:aqme]        MEMixerChannel.cpp:4969  ionc@0x797c9b9400 offline false, Sound Check off, flags 0x0, err 0, scalar 1.000"
@@ -42,14 +53,12 @@ var history = SoundCheckHistory()
 check("no line: unknown", history.changesSamples() == nil, true)
 history.record(scaled, at: t0)
 check("a line but no track start: unknown", history.changesSamples() == nil, true)
-check("latest is the newest line", history.latest == scaled, true)
 history.trackStarted(at: t0.addingTimeInterval(2))
 check("the line logged before the track started is its line", history.forTrack() == scaled, true)
 // pre-roll: the next track's line (scalar 1.000) lands long before the current track ends
 history.record(unity, at: t0.addingTimeInterval(200))
 check("a later line is the next track's: the playing track stays scaled", history.changesSamples() == true, true)
 check("the menu line stays the scaled one", history.forTrack() == scaled, true)
-check("the switch reads from the newest line", history.latest == unity, true)
 history.trackStarted(at: t0.addingTimeInterval(240))
 check("the next track starts: its own line (pre-rolled) is unity", history.changesSamples() == false, true)
 // a setup that comes after Playing
@@ -121,11 +130,18 @@ fast5.trackStarted(at: t0.addingTimeInterval(9))
 check("a fourth track with no line of its own stays unknown", fast5.changesSamples() == nil, true)
 var quit = history
 quit.clear()
-check("after Music quits: nothing known", quit.changesSamples() == nil && quit.latest == nil && quit.forTrack() == nil, true)
+check("after Music quits: nothing known", quit.changesSamples() == nil && quit.forTrack() == nil, true)
 quit.record(unity, at: t0.addingTimeInterval(500))
 check("the new process's first line, no track yet: unknown, not the old scalar", quit.changesSamples() == nil, true)
 quit.trackStarted(at: t0.addingTimeInterval(501))
 check("then its own line decides", quit.changesSamples() == false, true)
+
+// a later line of another item is not the playing track's
+var other = SoundCheckHistory()
+other.record(unity, at: t0)
+other.trackStarted(at: t0.addingTimeInterval(1))
+other.record(scaled, at: t0.addingTimeInterval(60))
+check("a later scaled line of another item does not scale the playing track", other.changesSamples() == false, true)
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
