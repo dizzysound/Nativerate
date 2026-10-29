@@ -223,6 +223,7 @@ final class VirtualDeviceEngine {
     // Check blamed Music for their off-grid samples)
     private var sourceKnown = true
     private var trackStartedLossy = false // this track had a lossy decoder of its own (a stream's start)
+    private var upgradedToLossless = false // ... and its lossless decoder took over (the lossless upgrade ran)
     private var newestDecoderLossy = false // when the track was decided, the newest decoder line (the one Music may have reused) was lossy
     private var gridInferredLossy = false // off every grid with nothing in Music changing samples: lossy
     private var latchedAt: Date?
@@ -567,6 +568,7 @@ final class VirtualDeviceEngine {
                 depthAdopted = false
                 decisionLineAt = up.lineAt
                 setSource(up.bits, lossy: false)
+                upgradedToLossless = true
                 setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
                     log("lossless decoder at \(up.rate) Hz after a lossy start or Music's rate for a stream; switching again")
@@ -1553,7 +1555,7 @@ final class VirtualDeviceEngine {
         // was lossy (Music reuses a decoder across same-format tracks and logs no line: coffee, "Get
         // Behind the Mule" on Another Day's AAC decoder). With no such line it stays "? bit".
         if v == 0, !sourceLossy {
-            gridInferredLossy = SourceInference.offGridIsLossy(trackStartedLossy: trackStartedLossy, sourceKnown: sourceKnown, newestDecoderLossy: newestDecoderLossy, musicLeavesSamplesAlone: musicLeavesSamplesAlone)
+            gridInferredLossy = SourceInference.offGridIsLossy(trackStartedLossy: trackStartedLossy, upgradedToLossless: upgradedToLossless, sourceKnown: sourceKnown, newestDecoderLossy: newestDecoderLossy, musicLeavesSamplesAlone: musicLeavesSamplesAlone)
         }
         let why = v == 0 ? "on neither the 16- nor the 24-bit grid (\(o24) of \(nz) samples): \(sourceLossy ? "lossy" : gridInferredLossy ? (trackStartedLossy ? "lossy (it started on a lossy decoder)" : "lossy (no decoder line of its own, the decoder it reused is lossy; Music's volume 100, Sound Check and Sound Enhancer off)") : !sourceKnown ? "no decoder line of its own, so lossy or changed by Music" : "Music changes them (volume, Sound Check, EQ) or the source is float")"
             : near16 ? "\(o24) of \(nz) samples within 1/64 of a 16-bit step but not on it: rounded in the playback path, not bit-exact"
@@ -1580,7 +1582,7 @@ final class VirtualDeviceEngine {
     /// `menuBits`: a depth for the menu only (a reused decoder's); the DAC's format stays on `bits`.
     private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil, lineAt: Date? = nil) {
         resetGrid()
-        trackStartedLossy = false
+        trackStartedLossy = false; upgradedToLossless = false
         newestDecoderLossy = decoderRates.last.map { !$0.lossless } ?? false
         takeBackLine = false; takeBackLossyAt = nil
         trackRate = rate
@@ -1975,7 +1977,7 @@ final class VirtualDeviceEngine {
             let file = fileStats?.sampleRate
             rate = musicRate ?? own ?? file ?? recent
             resetGrid()
-            trackStartedLossy = false
+            trackStartedLossy = false; upgradedToLossless = false
             takeBackLossyAt = nil
             // only a lossless line with a depth, at the rate the track plays at: another rate's line is
             // another decoder's, and must neither pin the depth nor hide a lossy line at the track's rate

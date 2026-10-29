@@ -15,6 +15,11 @@ check("reused lossy decoder is lossy", SourceInference.offGridIsLossy(trackStart
 check("settings that change samples are not lossy", SourceInference.offGridIsLossy(trackStartedLossy: false, sourceKnown: false, newestDecoderLossy: true, musicLeavesSamplesAlone: changed), false)
 // a stream that started on a lossy decoder stays lossy whatever else is known
 check("started lossy is lossy", SourceInference.offGridIsLossy(trackStartedLossy: true, sourceKnown: true, newestDecoderLossy: false, musicLeavesSamplesAlone: changed), true)
+// pastor Mac, Love In The Past Tense (24 bit, 96k): AAC start, then the lossless decoder took over. Plain 24-bit
+// tracks there are off both grids too, so the start alone says nothing once the lossless decoder plays
+check("lossless upgrade, settings change samples: not lossy", SourceInference.offGridIsLossy(trackStartedLossy: true, upgradedToLossless: true, sourceKnown: true, newestDecoderLossy: false, musicLeavesSamplesAlone: changed), false)
+// the same, but nothing readable in Music changes samples: off every grid on the lossless decoder is still lossy
+check("lossless upgrade, nothing changes samples: lossy", SourceInference.offGridIsLossy(trackStartedLossy: true, upgradedToLossless: true, sourceKnown: true, newestDecoderLossy: false, musicLeavesSamplesAlone: alone), true)
 // a source a decoder line or the library already told is never turned lossy by the samples
 check("known source is not guessed", SourceInference.offGridIsLossy(trackStartedLossy: false, sourceKnown: true, newestDecoderLossy: true, musicLeavesSamplesAlone: alone), false)
 // the settings are only read when they can matter
