@@ -83,7 +83,9 @@ struct SoundCheckHistory {
     }
 
     /// With no earlier track start there is no floor to cut off the line of a track that was already playing when
-    /// the engine started, so such a line counts only when it is recent (`firstStartWindow`).
+    /// the engine started, so such a line counts only when it is recent (`firstStartWindow`). A line inside the
+    /// window that is the unseen earlier track's late setup cannot be told from the track's own pre-roll setup:
+    /// no field of the line is known to name a track, so that narrow case still takes it.
     private func lineBeforeStart(_ start: Date, after previous: Date?, grace: TimeInterval) -> SoundCheckLine? {
         let floor = previous.map { $0.addingTimeInterval(grace) } ?? start.addingTimeInterval(-Self.firstStartWindow)
         return entries.last(where: { $0.at <= start && $0.at > floor })?.line
