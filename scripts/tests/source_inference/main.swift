@@ -53,14 +53,12 @@ var history = SoundCheckHistory()
 check("no line: unknown", history.changesSamples() == nil, true)
 history.record(scaled, at: t0)
 check("a line but no track start: unknown", history.changesSamples() == nil, true)
-check("latest is the newest line", history.latest == scaled, true)
 history.trackStarted(at: t0.addingTimeInterval(2))
 check("the line logged before the track started is its line", history.forTrack() == scaled, true)
 // pre-roll: the next track's line (scalar 1.000) lands long before the current track ends
 history.record(unity, at: t0.addingTimeInterval(200))
 check("a later line is the next track's: the playing track stays scaled", history.changesSamples() == true, true)
 check("the menu line stays the scaled one", history.forTrack() == scaled, true)
-check("the switch reads from the newest line", history.latest == unity, true)
 history.trackStarted(at: t0.addingTimeInterval(240))
 check("the next track starts: its own line (pre-rolled) is unity", history.changesSamples() == false, true)
 // a setup that comes after Playing
@@ -132,11 +130,22 @@ fast5.trackStarted(at: t0.addingTimeInterval(9))
 check("a fourth track with no line of its own stays unknown", fast5.changesSamples() == nil, true)
 var quit = history
 quit.clear()
-check("after Music quits: nothing known", quit.changesSamples() == nil && quit.latest == nil && quit.forTrack() == nil, true)
+check("after Music quits: nothing known", quit.changesSamples() == nil && quit.forTrack() == nil, true)
 quit.record(unity, at: t0.addingTimeInterval(500))
 check("the new process's first line, no track yet: unknown, not the old scalar", quit.changesSamples() == nil, true)
 quit.trackStarted(at: t0.addingTimeInterval(501))
 check("then its own line decides", quit.changesSamples() == false, true)
+
+// the Music settings window's "Sound Check is on" (the screenshot case: the setting off, Music logging "on" lines)
+check("preference off, no line: no problem", SoundCheckLine.problem(preference: nil, playingTrackScaled: nil) == false, true)
+check("preference false (0), a bare on line with scalar 1.000: no problem", SoundCheckLine.problem(preference: 0, playingTrackScaled: false) == false, true)
+check("preference set: problem", SoundCheckLine.problem(preference: 1, playingTrackScaled: nil) == true, true)
+check("preference off but the playing track is scaled (macOS 27): problem", SoundCheckLine.problem(preference: 0, playingTrackScaled: true) == true, true)
+var other = SoundCheckHistory()
+other.record(unity, at: t0)
+other.trackStarted(at: t0.addingTimeInterval(1))
+other.record(scaled, at: t0.addingTimeInterval(60)) // a later "on" line of another item, not the playing track's
+check("a later scaled line of another item does not make the playing track a problem", SoundCheckLine.problem(preference: 0, playingTrackScaled: other.changesSamples()) == false, true)
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")

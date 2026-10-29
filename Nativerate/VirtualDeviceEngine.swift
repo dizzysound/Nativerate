@@ -451,17 +451,17 @@ final class VirtualDeviceEngine {
             let now = Date()
             var sawSoundCheck = false
             self.inboxLock.lock()
-            let onBefore = self.soundChecks.latest?.on
+            let scaledBefore = self.soundChecks.changesSamples()
             for line in lines {
                 if let sc = SoundCheckLine.parse(line) { self.soundChecks.record(sc, at: now); sawSoundCheck = true } else { self.lineInbox.append((now, line)) }
             }
             self.lastStreamLineAt = now
-            let onAfter = self.soundChecks.latest?.on
+            let scaledAfter = self.soundChecks.changesSamples()
             self.inboxLock.unlock()
             if sawSoundCheck {
                 self.publishSoundCheck()
                 // the switch may read off in the preferences (macOS 27) and only show here, after the check for the track ran
-                if onAfter != onBefore { MusicSettingsCheck.shared.recheck.store(1, ordering: .releasing) }
+                if scaledAfter != scaledBefore { MusicSettingsCheck.shared.recheck.store(1, ordering: .releasing) }
             }
         }
         // Pastor, 2026-10-18: after a 3 h idle no decoder line reached the engine, though Music logged them
@@ -615,9 +615,9 @@ final class VirtualDeviceEngine {
             }
             if !inRoutine, settingsCheckDue || MusicSettingsCheck.shared.recheck.exchange(0, ordering: .acquiringAndReleasing) != 0 {
                 settingsCheckDue = false
-                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), soundCheckOn: { [unowned self] in
+                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), soundCheckScalesTrack: { [unowned self] in
                     self.inboxLock.lock(); defer { self.inboxLock.unlock() }
-                    return self.soundChecks.latest.map { $0.on }
+                    return self.soundChecks.changesSamples()
                 }, log: { [unowned self] in self.log($0) })
             }
             if now.timeIntervalSince(lastStatus) >= 30 {
@@ -3656,7 +3656,7 @@ final class MusicSettingsCheck: ObservableObject {
     private var window: NSWindow?
 
     /// Engine thread.
-    func check(_ scripts: RendererScripts, musicRunning: Bool, soundCheckOn: () -> Bool?, log: (String) -> Void) {
+    func check(_ scripts: RendererScripts, musicRunning: Bool, soundCheckScalesTrack: () -> Bool?, log: (String) -> Void) {
         guard musicRunning else { return }
         let app = "com.apple.Music" as CFString
         CFPreferencesAppSynchronize(app)
@@ -3666,7 +3666,7 @@ final class MusicSettingsCheck: ObservableObject {
             found.append(.init(id: "transitions", what: "AutoMix or Crossfade is on",
                                fix: "Music > Settings > Playback: turn off AutoMix and Crossfade. They blend one track into the next, so a sample-rate switch can't happen cleanly."))
         }
-        if (pref("optimizeSongVolume") ?? 0) != 0 || soundCheckOn() == true {
+        if SoundCheckLine.problem(preference: pref("optimizeSongVolume"), playingTrackScaled: soundCheckScalesTrack()) {
             found.append(.init(id: "soundcheck", what: "Sound Check is on",
                                fix: "Music > Settings > Playback: turn off Sound Check. It changes each track's level, so the output isn't bit-perfect."))
         }
