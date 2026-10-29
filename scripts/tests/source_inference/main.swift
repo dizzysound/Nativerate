@@ -27,6 +27,17 @@ var reads = 0
 _ = SourceInference.offGridIsLossy(trackStartedLossy: false, sourceKnown: false, newestDecoderLossy: false, musicLeavesSamplesAlone: { reads += 1; return true })
 check("settings not read without a lossy decoder", reads == 0, true)
 
+// Dolby Atmos is only a question for an Apple Music subscription stream
+check("subscription stream", SourceInference.isSubscriptionStream(cloud: "subscription", localFile: false), true)
+check("downloaded subscription track", SourceInference.isSubscriptionStream(cloud: "subscription", localFile: true), true)
+check("stream with empty library info", SourceInference.isSubscriptionStream(cloud: "", localFile: false), true)
+check("stream with missing value status", SourceInference.isSubscriptionStream(cloud: "missing value", localFile: false), true)
+check("local file, no cloud status", SourceInference.isSubscriptionStream(cloud: "", localFile: true), false)
+check("matched, not downloaded", SourceInference.isSubscriptionStream(cloud: "matched", localFile: false), false)
+check("matched, downloaded", SourceInference.isSubscriptionStream(cloud: "matched", localFile: true), false)
+check("uploaded", SourceInference.isSubscriptionStream(cloud: "uploaded", localFile: false), false)
+check("purchased", SourceInference.isSubscriptionStream(cloud: "purchased", localFile: true), false)
+
 // Music's Sound Check line (pastor Mac, macOS 27.2, 2026-10-29): on with a scalar below 1 scales the samples
 let onLine = "2026-10-29 11:21:07.748 Df Music[37604:1d7372] [com.apple.coreaudio:aqme]        MEMixerChannel.cpp:4969  ionc@0x797c9b9400 offline false, Sound Check on, flags 0x0, err 0, scalar 0.434"
 let offLine = "2026-10-29 10:59:02.100 Df Music[37604:1d7372] [com.apple.coreaudio:aqme]        MEMixerChannel.cpp:4969  ionc@0x797c9b9400 offline false, Sound Check off, flags 0x0, err 0, scalar 1.000"

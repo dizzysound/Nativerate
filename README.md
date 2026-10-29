@@ -57,7 +57,7 @@ With Exclusive Mode on, the menu shows the rate and the track's bit depth, for e
 for a lossy track (AAC or MP3), and "? bit" when the depth isn't known yet, for example when Music
 reused a decoder and logged nothing new for the track.
 
-The **Bit-perfect check** menu item reports whether your current path is bit-perfect and, if not, why.
+The **Bit-perfect check…** menu item opens a window that reports whether your current path is bit-perfect and, if not, why. It checks when you open it (and on Refresh), never in the background. The Dolby Atmos line shows only while an Apple Music subscription stream is the current track.
 
 **Proven bit-perfect at the digital output.** On macOS 27, we cabled an RME Babyface Pro FS's optical output back into its
 optical input and played test files through Music and Nativerate in Exclusive Mode. Every sample

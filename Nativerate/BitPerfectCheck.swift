@@ -3,10 +3,10 @@
 //  Nativerate
 //
 //  Settings that change what reaches the output device from Music (its own processing, plus
-//  alert sounds mixed into the same device), shown in the menu.
-//  Music's preferences are read from its defaults domain (no Apple event). The volume needs one
-//  Apple event per refresh: at launch, on Refresh, when the output or alert device changes, and on
-//  Music player notifications (play, pause, track changes), at most once every 3 s.
+//  alert sounds mixed into the same device), shown in the Bit-perfect check window.
+//  Nothing runs in the background: the check runs when the window opens and on its Refresh button.
+//  Music's preferences are read from its defaults domain (no Apple event); the volume and the
+//  track's source need one Apple event each.
 //
 
 import AppKit
@@ -14,6 +14,7 @@ import Combine
 import CoreAudio
 import Foundation
 import SimplyCoreAudio
+import SwiftUI
 
 final class BitPerfectCheck: ObservableObject {
 
@@ -25,75 +26,29 @@ final class BitPerfectCheck: ObservableObject {
 
     @Published private(set) var items = [Item]()
 
-    var issueCount: Int {
-        items.filter { $0.ok == false }.count
-    }
-
     private let outputDevice: () -> AudioObjectID?
     private let queue = DispatchQueue(label: "bitPerfectCheckQueue", qos: .utility)
-    private var observer: NSObjectProtocol?
-    private var deviceObservers = [NSObjectProtocol]()
-    private var othersRouteSink: AnyCancellable?
-    private var offGridSink: AnyCancellable?
-    private var soundCheckSink: AnyCancellable?
-    private var nearGridSink: AnyCancellable?
-    private var dacSink: AnyCancellable?
-    private var softwareVolumeSink: AnyCancellable?
-    private var lastRefresh = Date.distantPast // main thread only
+    private var window: NSWindow?
 
     init(outputDevice: @escaping () -> AudioObjectID?) {
         self.outputDevice = outputDevice
-        observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] _ in
-            // Music posts several of these per play, pause or track change; one refresh is enough.
-            guard let self, Date().timeIntervalSince(lastRefresh) > 3 else { return }
-            refresh()
-        }
-        // The alert-sounds item compares two devices; keep it current when either changes.
-        // (SimplyCoreAudio posts these; a change of the menu's Selected Device calls refreshAfterDeviceChange.)
-        for name in [Notification.Name.defaultOutputDeviceChanged, .defaultSystemOutputDeviceChanged] {
-            deviceObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.refreshAfterDeviceChange()
-            })
-        }
-        // Exclusive Mode's other-apps route (speakers, muted, or mixed into Music with an old plug-in)
-        othersRouteSink = RendererOutput.shared.$othersRoute.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            self?.refreshAfterDeviceChange()
-        }
-        soundCheckSink = RendererOutput.shared.$soundCheck.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            self?.refreshAfterDeviceChange()
-        }
-        offGridSink = RendererOutput.shared.$offGrid.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            self?.refreshAfterDeviceChange()
-        }
-        // the DAC Exclusive Mode holds (the default output is then the virtual device)
-        dacSink = RendererOutput.shared.$dacID.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            self?.refreshAfterDeviceChange()
-        }
-        nearGridSink = RendererOutput.shared.$nearGrid.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            self?.refreshAfterDeviceChange()
-        }
-        softwareVolumeSink = RendererOutput.shared.$softwareVolume.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            self?.refreshAfterDeviceChange()
-        }
+    }
+
+    func showWindow() {
         refresh()
-    }
-
-    deinit {
-        if let observer {
-            DistributedNotificationCenter.default().removeObserver(observer)
+        if window == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: BitPerfectCheckView(check: self)))
+            w.title = "Bit-perfect check"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.center()
+            window = w
         }
-        deviceObservers.forEach { NotificationCenter.default.removeObserver($0) }
-    }
-
-    /// Defers to the next main-queue turn, so observers that update the device (OutputDevices) run first.
-    func refreshAfterDeviceChange() {
-        DispatchQueue.main.async { [weak self] in
-            self?.refresh()
-        }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
     }
 
     func refresh() {
-        lastRefresh = Date()
         let device = outputDevice()
         let others = RendererOutput.shared.othersRoute
         let offGrid = RendererOutput.shared.offGrid
@@ -152,9 +107,12 @@ final class BitPerfectCheck: ObservableObject {
             let soundCheckOff = (musicPreference("optimizeSongVolume") as? Int) == 0
             items.append(Item(id: "soundCheck", ok: soundCheckOff, text: soundCheckOff ? "Sound Check off" : "Sound Check may be on (changes levels)"))
         }
-        // 30 when Off; absent when Automatic
-        let atmosOff = (musicPreference("preferredDolbyAtmosPlaySetting") as? Int) == 30
-        items.append(Item(id: "atmos", ok: atmosOff, text: atmosOff ? "Dolby Atmos off" : "Dolby Atmos not Off (can play the Atmos mix instead of lossless stereo)"))
+        // Only an Apple Music subscription stream has an Atmos mix to play instead of the stereo track.
+        if currentTrackIsSubscriptionStream() {
+            // 30 when Off; absent when Automatic
+            let atmosOff = (musicPreference("preferredDolbyAtmosPlaySetting") as? Int) == 30
+            items.append(Item(id: "atmos", ok: atmosOff, text: atmosOff ? "Dolby Atmos off" : "Dolby Atmos not Off (can play the Atmos mix instead of lossless stereo)"))
+        }
         // Neither leaves a trace in Music's preferences, and AppleScript's "EQ enabled" reads false while it's on.
         items.append(Item(id: "manual", ok: nil, text: "Check in Music: Equalizer and Crossfade off"))
         if UserDefaults.standard.bool(forKey: "PreferRendererEngine"), UserDefaults.standard.bool(forKey: Defaults.kOvershootProtection) {
@@ -172,6 +130,30 @@ final class BitPerfectCheck: ObservableObject {
                               text: separate ? "Alert sounds play on another device" : "Alert sounds mix into this device"))
         }
         return items
+    }
+
+    /// False when Music isn't running, has no current track, or can't be asked.
+    private static func currentTrackIsSubscriptionStream() -> Bool {
+        guard isMusicRunning else { return false }
+        let script = """
+        tell application "Music"
+            if player state is stopped then return ""
+            set t to current track
+            set c to ""
+            try
+                set c to cloud status of t as string
+            end try
+            set f to "0"
+            try
+                if class of t is file track and location of t is not missing value then set f to "1"
+            end try
+            return c & "|" & f
+        end tell
+        """
+        guard let output = runScript(script), !output.isEmpty else { return false }
+        let parts = output.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        return SourceInference.isSubscriptionStream(cloud: String(parts[0]), localFile: parts[1] == "1")
     }
 
     private static var isMusicRunning: Bool {
@@ -208,5 +190,43 @@ final class BitPerfectCheck: ObservableObject {
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else { return nil }
         return device
+    }
+}
+
+struct BitPerfectCheckView: View {
+    @ObservedObject var check: BitPerfectCheck
+
+    private func symbol(_ ok: Bool?) -> String {
+        switch ok {
+        case true?: return "checkmark.circle"
+        case false?: return "exclamationmark.triangle"
+        case nil: return "questionmark.circle"
+        }
+    }
+
+    private func word(_ ok: Bool?) -> String {
+        switch ok {
+        case true?: return "OK"
+        case false?: return "Warning"
+        case nil: return "Check manually"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(check.items) { item in
+                Label(item.text, systemImage: symbol(item.ok))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("\(word(item.ok)): \(item.text)")
+            }
+            Divider()
+            Button {
+                check.refresh()
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+        }
+        .padding(16)
+        .frame(width: 480, alignment: .leading)
     }
 }

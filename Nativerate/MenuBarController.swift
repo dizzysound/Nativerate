@@ -36,8 +36,6 @@ class MenuBarController {
     @ObservationIgnored
     private var rendererCancellable: AnyCancellable?
 
-    @ObservationIgnored
-    private var selectedDeviceCancellable: AnyCancellable?
     
     private init() {
         let outputDevices = OutputDevices()
@@ -47,9 +45,6 @@ class MenuBarController {
         self.bitPerfectCheck = BitPerfectCheck(outputDevice: { [weak outputDevices] in
             (outputDevices?.selectedOutputDevice ?? outputDevices?.defaultOutputDevice)?.id
         })
-        self.selectedDeviceCancellable = outputDevices.$selectedOutputDevice.dropFirst().sink { [weak self] _ in
-            self?.bitPerfectCheck.refreshAfterDeviceChange()
-        }
         let engine = RendererEngine(outputDevices: outputDevices)
         let vEngine = VirtualDeviceEngine(outputDevices: outputDevices)
         self.rendererEngine = engine

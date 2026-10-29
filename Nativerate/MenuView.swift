@@ -44,31 +44,14 @@ struct MenuView: View {
     /// Hover text for Software Volume.
     private let softwareVolumeHelp = "For a DAC with no volume control of its own (the volume keys do nothing on it), the volume keys scale Exclusive Mode's output in software: 0 to -64 dB, 4 dB per key press. At 0 dB nothing is changed and the output stays bit-perfect; below it the samples are scaled (and dithered when the DAC is an integer one), so it isn't. Off by default. This option is shown when the last DAC held had no volume control; a DAC that has one is never scaled (the keys drive it, and the audio stays at unity), whatever this is set to. Mute outputs silence on any DAC, with this on or off."
 
-    private func checkSymbol(_ ok: Bool?) -> String {
-        switch ok {
-        case true?: return "checkmark.circle"
-        case false?: return "exclamationmark.triangle"
-        case nil: return "questionmark.circle"
-        }
-    }
-
-    private func checkWord(_ ok: Bool?) -> String {
-        switch ok {
-        case true?: return "OK"
-        case false?: return "Warning"
-        case nil: return "Check manually"
-        }
-    }
-
     var body: some View {
         Group {
-            // Status first: the music-settings warning, the rate and DAC, then whether the path is bit-perfect
+            // Status first: the music-settings warning, then the rate and DAC
             Section {
                 if !musicSettings.problems.isEmpty {
                     Label("Music settings: " + musicSettings.problems.map(\.what).joined(separator: "; "), systemImage: "exclamationmark.triangle")
                 }
                 ContentView()
-                bitPerfectMenu
             }
 
             Section("Output") {
@@ -94,6 +77,11 @@ struct MenuView: View {
             }
 
             Section {
+                Button {
+                    bitPerfectCheck.showWindow()
+                } label: {
+                    Label("Bit-perfect check…", systemImage: "checkmark.seal")
+                }
                 settingsMenu
                 aboutMenu
             }
@@ -106,24 +94,6 @@ struct MenuView: View {
                 }
                 .keyboardShortcut("q")
             }
-        }
-    }
-
-    private var bitPerfectMenu: some View {
-        Menu {
-            ForEach(bitPerfectCheck.items) { item in
-                Label(item.text, systemImage: checkSymbol(item.ok))
-                    .accessibilityLabel("\(checkWord(item.ok)): \(item.text)")
-            }
-            Divider()
-            Button {
-                bitPerfectCheck.refresh()
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-        } label: {
-            Label(bitPerfectCheck.issueCount == 0 ? "Bit-perfect check" : "Bit-perfect check (\(bitPerfectCheck.issueCount) to review)",
-                  systemImage: bitPerfectCheck.issueCount == 0 ? "checkmark.seal" : "exclamationmark.triangle")
         }
     }
 
