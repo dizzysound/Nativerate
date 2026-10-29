@@ -25,6 +25,9 @@ final class BitPerfectCheck: ObservableObject {
     }
 
     @Published private(set) var items = [Item]()
+    /// True from a refresh until its result arrives; the window hides the previous results meanwhile.
+    @Published private(set) var checking = false
+    private var generation = 0
 
     private let outputDevice: () -> AudioObjectID?
     private let queue = DispatchQueue(label: "bitPerfectCheckQueue", qos: .utility)
@@ -49,6 +52,9 @@ final class BitPerfectCheck: ObservableObject {
     }
 
     func refresh() {
+        generation += 1
+        let thisRun = generation
+        checking = true
         let device = outputDevice()
         let others = RendererOutput.shared.othersRoute
         let offGrid = RendererOutput.shared.offGrid
@@ -63,7 +69,9 @@ final class BitPerfectCheck: ObservableObject {
             if nearGrid != 0 { items.append(Item(id: "nearGrid", ok: false, text: "\(nearGrid) bit, but not bit-exact: macOS rounds Music's samples by a fraction of a \(nearGrid)-bit step (seen on macOS 26; inaudible, not a level change)")) }
             print("[BitPerfectCheck] " + items.map { "\($0.ok.map { $0 ? "ok" : "REVIEW" } ?? "?"): \($0.text)" }.joined(separator: " | "))
             DispatchQueue.main.async {
-                self?.items = items
+                guard let self, self.generation == thisRun else { return }
+                self.items = items
+                self.checking = false
             }
         }
     }
@@ -214,10 +222,18 @@ struct BitPerfectCheckView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(check.items) { item in
-                Label(item.text, systemImage: symbol(item.ok))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("\(word(item.ok)): \(item.text)")
+            if check.checking {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking…")
+                }
+                .accessibilityElement(children: .combine)
+            } else {
+                ForEach(check.items) { item in
+                    Label(item.text, systemImage: symbol(item.ok))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("\(word(item.ok)): \(item.text)")
+                }
             }
             Divider()
             Button {
@@ -225,6 +241,7 @@ struct BitPerfectCheckView: View {
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
+            .disabled(check.checking)
         }
         .padding(16)
         .frame(width: 480, alignment: .leading)
