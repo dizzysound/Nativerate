@@ -148,6 +148,7 @@ final class VirtualDeviceEngine {
     private let inboxLock = NSLock()
     private var infoInbox: [(Date, [AnyHashable: Any])] = []
     private var lineInbox: [(Date, String)] = []
+    private var soundChecks = SoundCheckHistory()  // Music's Sound Check lines from the same stream
     private var stopRequested = false
     private var stopAbandoned = false     // stop() gave up waiting for the thread and restored the output itself
     private var pausedBySwitchAtStop = false  // engine thread only: a switch left Music paused when stop() came
@@ -223,6 +224,7 @@ final class VirtualDeviceEngine {
     // Check blamed Music for their off-grid samples)
     private var sourceKnown = true
     private var trackStartedLossy = false // this track had a lossy decoder of its own (a stream's start)
+    private var upgradedToLossless = false // ... and its lossless decoder took over (the lossless upgrade ran)
     private var newestDecoderLossy = false // when the track was decided, the newest decoder line (the one Music may have reused) was lossy
     private var gridInferredLossy = false // off every grid with nothing in Music changing samples: lossy
     private var latchedAt: Date?
@@ -374,7 +376,8 @@ final class VirtualDeviceEngine {
         case .begin: break
         }
         print("[Exclusive Mode] virtual-device engine: start requested")
-        inboxLock.lock(); stopRequested = false; stopAbandoned = false; infoInbox = []; lineInbox = []; feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
+        inboxLock.lock(); stopRequested = false; stopAbandoned = false; infoInbox = []; lineInbox = []; soundChecks.clear(); feedNotes = []; lastStreamLineAt = nil; feedQuickDeaths = 0; inboxLock.unlock()
+        RendererOutput.shared.set(soundCheck: nil)
         observer = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             self.inboxLock.lock(); self.infoInbox.append((Date(), note.userInfo ?? [:])); self.inboxLock.unlock()
@@ -429,7 +432,7 @@ final class VirtualDeviceEngine {
     private func startDecoderLog() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        p.arguments = ["stream", "--style", "compact", "--predicate", "process == \"Music\" AND eventMessage CONTAINS \"Input format:\""]
+        p.arguments = ["stream", "--style", "compact", "--predicate", "process == \"Music\" AND (eventMessage CONTAINS \"Input format:\" OR eventMessage CONTAINS \"Sound Check o\")"]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
@@ -446,7 +449,20 @@ final class VirtualDeviceEngine {
             }
             guard !lines.isEmpty else { return }
             let now = Date()
-            self.inboxLock.lock(); self.lineInbox += lines.map { (now, $0) }; self.lastStreamLineAt = now; self.inboxLock.unlock()
+            var sawSoundCheck = false
+            self.inboxLock.lock()
+            let onBefore = self.soundChecks.latest?.on
+            for line in lines {
+                if let sc = SoundCheckLine.parse(line) { self.soundChecks.record(sc, at: now); sawSoundCheck = true } else { self.lineInbox.append((now, line)) }
+            }
+            self.lastStreamLineAt = now
+            let onAfter = self.soundChecks.latest?.on
+            self.inboxLock.unlock()
+            if sawSoundCheck {
+                self.publishSoundCheck()
+                // the switch may read off in the preferences (macOS 27) and only show here, after the check for the track ran
+                if onAfter != onBefore { MusicSettingsCheck.shared.recheck.store(1, ordering: .releasing) }
+            }
         }
         // Pastor, 2026-10-18: after a 3 h idle no decoder line reached the engine, though Music logged them
         // (Old Brown Shoe was judged lossy for want of its own line). Whether the stream ended or stalled is
@@ -567,6 +583,7 @@ final class VirtualDeviceEngine {
                 depthAdopted = false
                 decisionLineAt = up.lineAt
                 setSource(up.bits, lossy: false)
+                upgradedToLossless = true
                 setWantBits(up.bits, lossless: true)
                 if let r = neededRate(up.rate) {
                     log("lossless decoder at \(up.rate) Hz after a lossy start or Music's rate for a stream; switching again")
@@ -598,7 +615,10 @@ final class VirtualDeviceEngine {
             }
             if !inRoutine, settingsCheckDue || MusicSettingsCheck.shared.recheck.exchange(0, ordering: .acquiringAndReleasing) != 0 {
                 settingsCheckDue = false
-                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), log: { [unowned self] in self.log($0) })
+                MusicSettingsCheck.shared.check(scripts, musicRunning: musicRunning(), soundCheckOn: { [unowned self] in
+                    self.inboxLock.lock(); defer { self.inboxLock.unlock() }
+                    return self.soundChecks.latest.map { $0.on }
+                }, log: { [unowned self] in self.log($0) })
             }
             if now.timeIntervalSince(lastStatus) >= 30 {
                 lastStatus = now
@@ -1332,6 +1352,7 @@ final class VirtualDeviceEngine {
             return
         }
         lastTrackID = pid
+        soundCheckTrackStarted(at: at)
         settingsCheckDue = true // after the rate decision below: the loop runs it
         lateArmAt = nil
         lossyTrackAt = nil; lossyStartAt = nil
@@ -1553,7 +1574,7 @@ final class VirtualDeviceEngine {
         // was lossy (Music reuses a decoder across same-format tracks and logs no line: coffee, "Get
         // Behind the Mule" on Another Day's AAC decoder). With no such line it stays "? bit".
         if v == 0, !sourceLossy {
-            gridInferredLossy = SourceInference.offGridIsLossy(trackStartedLossy: trackStartedLossy, sourceKnown: sourceKnown, newestDecoderLossy: newestDecoderLossy, musicLeavesSamplesAlone: musicLeavesSamplesAlone)
+            gridInferredLossy = SourceInference.offGridIsLossy(trackStartedLossy: trackStartedLossy, upgradedToLossless: upgradedToLossless, sourceKnown: sourceKnown, newestDecoderLossy: newestDecoderLossy, musicLeavesSamplesAlone: musicLeavesSamplesAlone)
         }
         let why = v == 0 ? "on neither the 16- nor the 24-bit grid (\(o24) of \(nz) samples): \(sourceLossy ? "lossy" : gridInferredLossy ? (trackStartedLossy ? "lossy (it started on a lossy decoder)" : "lossy (no decoder line of its own, the decoder it reused is lossy; Music's volume 100, Sound Check and Sound Enhancer off)") : !sourceKnown ? "no decoder line of its own, so lossy or changed by Music" : "Music changes them (volume, Sound Check, EQ) or the source is float")"
             : near16 ? "\(o24) of \(nz) samples within 1/64 of a 16-bit step but not on it: rounded in the playback path, not bit-exact"
@@ -1561,6 +1582,24 @@ final class VirtualDeviceEngine {
             : v == 24 ? "\(o16) of \(nz) samples off the 16-bit grid, all on the 24-bit grid" : "all \(nz) on the 16-bit grid"
         log("source depth from the samples: \(v == 0 ? "neither 16 nor 24 bit" : "\(v) bit") (\(why))\(logBits.map { $0 != v ? "; Music's log said \($0) bit" : "" } ?? "")\(keepsLineDepth ? "; the label keeps Music's \(logBits ?? 0) bit" : "")")
         publishSource()
+    }
+
+    /// Any thread: the playing track's Sound Check line (not the newest, which may be the next track's) to the menu.
+    private func publishSoundCheck() {
+        inboxLock.lock(); let line = soundChecks.forTrack(); inboxLock.unlock()
+        RendererOutput.shared.set(soundCheck: line)
+    }
+
+    /// A new track began playing: lines logged from here on (past a short grace) are the next track's.
+    private func soundCheckTrackStarted(at: Date) {
+        inboxLock.lock(); soundChecks.trackStarted(at: at); inboxLock.unlock()
+        publishSoundCheck()
+    }
+
+    /// Music quit: its lines and scalars are the old process's.
+    private func forgetSoundChecks() {
+        inboxLock.lock(); soundChecks.clear(); inboxLock.unlock()
+        RendererOutput.shared.set(soundCheck: nil)
     }
 
     /// Music's readable settings that change samples are all off: volume 100, Sound Check and Sound
@@ -1572,15 +1611,19 @@ final class VirtualDeviceEngine {
         let sc = CFPreferencesCopyAppValue("optimizeSongVolume" as CFString, app) as? NSNumber
         let en = CFPreferencesCopyAppValue("soundEnhancerEnabled" as CFString, app) as? NSNumber
         let vol = scripts.volume()
-        let alone = sc?.intValue == 0 && (en?.intValue ?? 0) == 0 && vol == 100
-        log("source depth: Music's settings: Sound Check \(sc.map { "\($0)" } ?? "absent (on)"), Sound Enhancer \(en.map { "\($0)" } ?? "absent (off)"), volume \(vol.map(String.init) ?? "?"): \(alone ? "nothing readable changes the samples" : "may change them")")
+        // macOS 27 keeps the Sound Check switch out of the preferences (it reads off while Music scales every
+        // track): Music's own log line, with the scalar, is what counts
+        inboxLock.lock(); let scLog = soundChecks.changesSamples(); let scLatest = soundChecks.forTrack(); inboxLock.unlock()
+        let alone = sc?.intValue == 0 && (en?.intValue ?? 0) == 0 && vol == 100 && scLog != true
+        let scText = scLatest.map { "Music's log for the track: Sound Check \($0.on ? "on" : "off"), scalar \(String(format: "%.3f", $0.scalar))" } ?? "no Sound Check line in Music's log"
+        log("source depth: Music's settings: Sound Check \(sc.map { "\($0)" } ?? "absent (on)"), Sound Enhancer \(en.map { "\($0)" } ?? "absent (off)"), volume \(vol.map(String.init) ?? "?"), \(scText): \(alone ? "nothing readable changes the samples" : "may change them")")
         return alone
     }
 
     /// `menuBits`: a depth for the menu only (a reused decoder's); the DAC's format stays on `bits`.
     private func decide(_ rate: Float64, bits: Int?, lossless: Bool, seenAgo: TimeInterval, name: String, tPlay: Date, sourceKnown: Bool = true, menuBits: Int? = nil, lineAt: Date? = nil) {
         resetGrid()
-        trackStartedLossy = false
+        trackStartedLossy = false; upgradedToLossless = false
         newestDecoderLossy = decoderRates.last.map { !$0.lossless } ?? false
         takeBackLine = false; takeBackLossyAt = nil
         trackRate = rate
@@ -1975,7 +2018,7 @@ final class VirtualDeviceEngine {
             let file = fileStats?.sampleRate
             rate = musicRate ?? own ?? file ?? recent
             resetGrid()
-            trackStartedLossy = false
+            trackStartedLossy = false; upgradedToLossless = false
             takeBackLossyAt = nil
             // only a lossless line with a depth, at the rate the track plays at: another rate's line is
             // another decoder's, and must neither pin the depth nor hide a lossy line at the track's rate
@@ -1997,7 +2040,7 @@ final class VirtualDeviceEngine {
         }
         setWantBits(logBits, lossless: !sourceLossy)
         let target = rate.flatMap { neededRate($0) } ?? curRate
-        if pid != lastTrackID { trackRate = rate }
+        if pid != lastTrackID { trackRate = rate; soundCheckTrackStarted(at: at) }
         lastTrackID = pid
         lastNewTrackAt = at
         inRoutine = false
@@ -2302,12 +2345,13 @@ final class VirtualDeviceEngine {
     private func checkDevicesAndMusic() {
         guard !inRoutine else { return }
         if steppedAside {
-            if lastTrackID != nil, !musicRunning() { log("Music quit (engine stepped aside)"); lastTrackID = nil }
+            if lastTrackID != nil, !musicRunning() { log("Music quit (engine stepped aside)"); lastTrackID = nil; forgetSoundChecks() }
             return
         }
         if lastTrackID != nil, !musicRunning() {
             log("Music quit; the next play waits at the gate for its own decoder line")
             lastTrackID = nil
+            forgetSoundChecks()
             playing = false
             // Relaunched Music played ~1.6 s before posting Playing (Babyface bench), and the last
             // decoder lines belong to the old session (one was taken 264 s later): gate the next
@@ -3612,7 +3656,7 @@ final class MusicSettingsCheck: ObservableObject {
     private var window: NSWindow?
 
     /// Engine thread.
-    func check(_ scripts: RendererScripts, musicRunning: Bool, log: (String) -> Void) {
+    func check(_ scripts: RendererScripts, musicRunning: Bool, soundCheckOn: () -> Bool?, log: (String) -> Void) {
         guard musicRunning else { return }
         let app = "com.apple.Music" as CFString
         CFPreferencesAppSynchronize(app)
@@ -3622,7 +3666,7 @@ final class MusicSettingsCheck: ObservableObject {
             found.append(.init(id: "transitions", what: "AutoMix or Crossfade is on",
                                fix: "Music > Settings > Playback: turn off AutoMix and Crossfade. They blend one track into the next, so a sample-rate switch can't happen cleanly."))
         }
-        if let v = pref("optimizeSongVolume"), v != 0 {
+        if (pref("optimizeSongVolume") ?? 0) != 0 || soundCheckOn() == true {
             found.append(.init(id: "soundcheck", what: "Sound Check is on",
                                fix: "Music > Settings > Playback: turn off Sound Check. It changes each track's level, so the output isn't bit-perfect."))
         }
@@ -3747,6 +3791,9 @@ final class RendererOutput: ObservableObject {
     @Published private(set) var sourceLossy = false
     /// Music's samples fit neither the 16- nor the 24-bit grid on a lossless track: Music changes them.
     @Published private(set) var offGrid = false
+    /// Music's newest Sound Check line (its scalar scales the samples); nil until one is seen. The preference
+    /// that held the switch before macOS 27 reads off there while Music still scales.
+    @Published private(set) var soundCheck: SoundCheckLine?
 
     /// Any thread.
     /// The depth (16 or 24) the track measured near rather than on its grid: rounded in the playback
@@ -3756,6 +3803,10 @@ final class RendererOutput: ObservableObject {
     /// Any thread.
     func set(nearGrid v: Int) {
         DispatchQueue.main.async { if self.nearGrid != v { self.nearGrid = v } }
+    }
+
+    func set(soundCheck v: SoundCheckLine?) {
+        DispatchQueue.main.async { if self.soundCheck != v { self.soundCheck = v } }
     }
 
     func set(offGrid v: Bool) {
