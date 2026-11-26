@@ -113,6 +113,27 @@ the device appears as "Nativerate" in Sound settings.
 To remove it: **Settings > Exclusive Mode driver > Remove…**, then delete the app. The engine log is
 `~/Library/Logs/Nativerate-ExclusiveMode.log`.
 
+### Remove the driver by hand
+
+Use this if the app is already deleted, does not start, or cannot remove the driver. The driver is
+one bundle, `/Library/Audio/Plug-Ins/HAL/LSOutput.driver`, for every version (also when its device
+was still called "LosslessSwitcher").
+
+1. Quit Nativerate if it's running. Exclusive Mode then gives the DAC and the default output back.
+2. In Terminal, delete the driver and restart the macOS audio server (asks for your password; all
+   audio stops for a few seconds):
+
+   ```sh
+   sudo rm -rf /Library/Audio/Plug-Ins/HAL/LSOutput.driver
+   sudo killall coreaudiod
+   ```
+
+3. Check that it's gone: `ls /Library/Audio/Plug-Ins/HAL` no longer lists `LSOutput.driver`, and
+   **System Settings > Sound > Output** no longer shows a "Nativerate" (or "LosslessSwitcher")
+   device. If the sound now plays on the wrong device, choose your output there.
+
+A reboot also loads the change if `killall coreaudiod` does not work.
+
 ## Build it
 
 Requirements: Xcode 27 (the SwiftUI macros need Xcode, not just the Command
