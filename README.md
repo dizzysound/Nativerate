@@ -117,9 +117,12 @@ To remove it: **Settings > Exclusive Mode driver > Remove…**, then delete the 
 
 Use this if the app is already deleted, does not start, or cannot remove the driver. The driver is
 one bundle, `/Library/Audio/Plug-Ins/HAL/LSOutput.driver`, for every version (also when its device
-was still called "LosslessSwitcher").
+was still called "LosslessSwitcher" or "LosslessSwitcher Output").
 
-1. Quit Nativerate if it's running. Exclusive Mode then gives the DAC and the default output back.
+1. Quit Nativerate from its menu if it's running, and keep it closed until step 3. A clean quit
+   gives the DAC and the default output back. If Nativerate crashed or was force-quit while
+   Exclusive Mode was on, the DAC can stay in a format that other apps cannot play to: open
+   Nativerate once (at launch it puts the DAC back in a normal format), then quit it from its menu.
 2. In Terminal, delete the driver and restart the macOS audio server (asks for your password; all
    audio stops for a few seconds):
 
@@ -129,10 +132,10 @@ was still called "LosslessSwitcher").
    ```
 
 3. Check that it's gone: `ls /Library/Audio/Plug-Ins/HAL` no longer lists `LSOutput.driver`, and
-   **System Settings > Sound > Output** no longer shows a "Nativerate" (or "LosslessSwitcher")
+   **System Settings > Sound > Output** no longer shows a "Nativerate" (or "LosslessSwitcher", "LosslessSwitcher Output")
    device. If the sound now plays on the wrong device, choose your output there.
 
-A reboot also loads the change if `killall coreaudiod` does not work.
+If the device is still listed after step 2, restart the Mac.
 
 ## Build it
 
